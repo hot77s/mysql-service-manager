@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>MySQLServiceController-Setup</AssemblyName>
+    <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>12.0</LangVersion>
+    <PlatformTarget>x86</PlatformTarget>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <RootNamespace />
+    <DebugType>none</DebugType>
+    <Deterministic>true</Deterministic>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Core" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="payload.app" />
+    <None Remove="payload.config" />
+    <None Remove="payload.guide" />
+    <EmbeddedResource Include="payload.app" LogicalName="payload.app" />
+    <EmbeddedResource Include="payload.config" LogicalName="payload.config" />
+    <EmbeddedResource Include="payload.guide" LogicalName="payload.guide" />
+  </ItemGroup>
+
+</Project>

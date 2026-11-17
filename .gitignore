@@ -1,0 +1,15 @@
+# Build output
+bin/
+obj/
+.vs/
+*.user
+*.suo
+
+# Local data / tooling
+.workbuddy/
+backup/
+*.log
+
+# Release artifacts (uploaded to GitHub Releases instead)
+dist/
+*.zip
