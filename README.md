@@ -26,12 +26,12 @@
 
 ## 安装
 
-从 [Releases](../../releases) 下载最新的 `MySQL管家-x.y.z-安装程序.exe`，按向导安装。
+从 [Releases](../../releases) 下载最新的 `MySQL-Manager-x.y.z-Setup.exe`，按向导安装。
 
 默认安装到 `%LOCALAPPDATA%\Programs\MySQLManager`；也可以指定目录：
 
 ```bat
-MySQL管家-1.4.7-安装程序.exe --install-dir "D:\Software\MySQL Manager"
+MySQL-Manager-1.4.7-Setup.exe --install-dir "D:\Software\MySQL Manager"
 ```
 
 便携版可直接运行 `MySQLManager.exe`，但安装包会创建开始菜单 / 桌面快捷方式与卸载项。
