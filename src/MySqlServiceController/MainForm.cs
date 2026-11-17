@@ -80,6 +80,16 @@ internal sealed class MainForm : Form
 
 	private RoundedButton _workbenchButton;
 
+	private RoundedButton _preflightButton;
+
+	private RoundedButton _errorLogButton;
+
+	private Label _diagnosticsHint;
+
+	private string _lastPreflightSummary = string.Empty;
+
+	private PreflightSeverity? _lastPreflightSeverity;
+
 	private SurfacePanel _statusCard;
 
 	private SurfacePanel _bannerPanel;
@@ -256,6 +266,7 @@ internal sealed class MainForm : Form
 				_statusCard.AccentColor = Theme.Subtle;
 			}
 			_footerHintLabel.ForeColor = Theme.Subtle;
+			ApplyDiagnosticsHintColor();
 			_lastRefreshLabel.ForeColor = Theme.Muted;
 			_authorLabel.ForeColor = Theme.Muted;
 			_configLink.LinkColor = Theme.Muted;
@@ -346,6 +357,28 @@ internal sealed class MainForm : Form
 		_workbenchButton.ForeColor = Theme.Text;
 		_workbenchButton.DisabledColor = Theme.NeutralSoft;
 		_workbenchButton.DisabledTextColor = Theme.Subtle;
+		if (_preflightButton != null)
+		{
+			_preflightButton.NormalColor = Theme.Surface;
+			_preflightButton.HoverColor = Theme.SurfaceAlt;
+			_preflightButton.PressedColor = Theme.Mix(Theme.SurfaceAlt, Theme.Text, 0.06);
+			_preflightButton.ButtonBorderColor = Theme.Border;
+			_preflightButton.SurfaceColor = Theme.Background;
+			_preflightButton.ForeColor = Theme.Text;
+			_preflightButton.DisabledColor = Theme.NeutralSoft;
+			_preflightButton.DisabledTextColor = Theme.Subtle;
+		}
+		if (_errorLogButton != null)
+		{
+			_errorLogButton.NormalColor = Theme.Surface;
+			_errorLogButton.HoverColor = Theme.SurfaceAlt;
+			_errorLogButton.PressedColor = Theme.Mix(Theme.SurfaceAlt, Theme.Text, 0.06);
+			_errorLogButton.ButtonBorderColor = Theme.Border;
+			_errorLogButton.SurfaceColor = Theme.Background;
+			_errorLogButton.ForeColor = Theme.Text;
+			_errorLogButton.DisabledColor = Theme.NeutralSoft;
+			_errorLogButton.DisabledTextColor = Theme.Subtle;
+		}
 	}
 
 	private void ApplyBannerColors()
@@ -548,6 +581,43 @@ internal sealed class MainForm : Form
 			_detailsCard.Controls.Add(value);
 		}
 
+		_preflightButton = new RoundedButton();
+		_preflightButton.Text = "启动前体检";
+		_preflightButton.Location = new Point(Dp(24), Dp(466));
+		_preflightButton.Size = new Size(Dp(104), Dp(32));
+		_preflightButton.NormalColor = Theme.Surface;
+		_preflightButton.HoverColor = Theme.SurfaceAlt;
+		_preflightButton.PressedColor = Theme.Mix(Theme.SurfaceAlt, Theme.Text, 0.06);
+		_preflightButton.ButtonBorderColor = Theme.Border;
+		_preflightButton.SurfaceColor = Theme.Background;
+		_preflightButton.ForeColor = Theme.Text;
+		_preflightButton.Font = Theme.Font(9f, FontStyle.Bold);
+		_preflightButton.Radius = 10f;
+		_preflightButton.Click += PreflightButton_Click;
+		_preflightButton.AccessibleName = "启动前体检";
+		base.Controls.Add(_preflightButton);
+		_errorLogButton = new RoundedButton();
+		_errorLogButton.Text = "错误日志";
+		_errorLogButton.Location = new Point(Dp(138), Dp(466));
+		_errorLogButton.Size = new Size(Dp(88), Dp(32));
+		_errorLogButton.NormalColor = Theme.Surface;
+		_errorLogButton.HoverColor = Theme.SurfaceAlt;
+		_errorLogButton.PressedColor = Theme.Mix(Theme.SurfaceAlt, Theme.Text, 0.06);
+		_errorLogButton.ButtonBorderColor = Theme.Border;
+		_errorLogButton.SurfaceColor = Theme.Background;
+		_errorLogButton.ForeColor = Theme.Text;
+		_errorLogButton.Font = Theme.Font(9f, FontStyle.Bold);
+		_errorLogButton.Radius = 10f;
+		_errorLogButton.Click += ErrorLogButton_Click;
+		_errorLogButton.AccessibleName = "查看 MySQL 错误日志";
+		base.Controls.Add(_errorLogButton);
+		_diagnosticsHint = MakeLabel("体检可发现端口冲突、目录缺失与配置错误", 0, 0, 1, 1, Theme.Font(8.5f, FontStyle.Regular), Theme.Subtle);
+		_diagnosticsHint.AutoSize = false;
+		_diagnosticsHint.TextAlign = ContentAlignment.MiddleRight;
+		base.Controls.Add(_diagnosticsHint);
+		_toolTip.SetToolTip(_preflightButton, "检查服务、my.ini、数据目录、端口占用与磁盘空间");
+		_toolTip.SetToolTip(_errorLogButton, "查看 MySQL 的 .err 错误日志，可筛选错误与警告");
+
 		_footerHintLabel = MakeLabel("启停操作不会删除数据库文件", Dp(24), Dp(500), Dp(420), Dp(18), Theme.Font(8.5f, FontStyle.Regular), Theme.Subtle);
 		_footerHintLabel.AutoSize = true;
 		base.Controls.Add(_footerHintLabel);
@@ -705,7 +775,13 @@ internal sealed class MainForm : Form
 				array[i].SetBounds(rowPad, rowH * (i + 1), contentW - rowPad * 2, 1);
 			}
 
-			_footerHintLabel.Location = new Point(margin, _detailsCard.Bottom + Dp(10));
+			int toolsTop = _detailsCard.Bottom + Dp(14);
+			int toolHeight = Dp(32);
+			_preflightButton.SetBounds(margin, toolsTop, Dp(104), toolHeight);
+			_errorLogButton.SetBounds(margin + Dp(104) + Dp(10), toolsTop, Dp(88), toolHeight);
+			int hintLeft = _errorLogButton.Right + Dp(14);
+			_diagnosticsHint.SetBounds(hintLeft, toolsTop, Math.Max(Dp(160), width - margin - hintLeft), toolHeight);
+			_footerHintLabel.Location = new Point(margin, toolsTop + toolHeight + Dp(10));
 			if (_workbenchUpdateLink.Visible)
 			{
 				_workbenchUpdateLink.SetBounds(margin, _footerHintLabel.Bottom + Dp(3), contentW, Dp(18));
@@ -1553,7 +1629,19 @@ internal sealed class MainForm : Form
 		ShowBanner(BannerKind.Success, result.Message, null, null);
 			return;
 		}
-		ShowBanner(result.WasCancelled ? BannerKind.Warning : BannerKind.Error, result.Message, (result.Message.IndexOf("没有找到", StringComparison.Ordinal) >= 0) ? "打开设置" : null, "settings", 20);
+		string text2 = null;
+		string text3 = null;
+		if (result.Message.IndexOf("没有找到", StringComparison.Ordinal) >= 0)
+		{
+			text2 = "打开设置";
+			text3 = "settings";
+		}
+		else if (action == "start")
+		{
+			text2 = "启动前体检";
+			text3 = "preflight";
+		}
+		ShowBanner(result.WasCancelled ? BannerKind.Warning : BannerKind.Error, result.Message, text2, text3, 20);
 		string text = result.Message;
 		if (!string.IsNullOrWhiteSpace(result.Detail))
 		{
@@ -1599,6 +1687,64 @@ internal sealed class MainForm : Form
 		{
 			SettingsButton_Click(sender, EventArgs.Empty);
 		}
+		else if (_bannerActionKind == "preflight")
+		{
+			ShowPreflightDialog();
+		}
+	}
+
+	private void PreflightButton_Click(object sender, EventArgs e)
+	{
+		if (_busy)
+		{
+			return;
+		}
+		ShowPreflightDialog();
+	}
+
+	private void ErrorLogButton_Click(object sender, EventArgs e)
+	{
+		if (_busy)
+		{
+			return;
+		}
+		using ErrorLogForm form = new ErrorLogForm(_config.ServiceName);
+		form.ShowDialog(this);
+	}
+
+	private void ShowPreflightDialog()
+	{
+		using PreflightForm form = new PreflightForm(_config.ServiceName);
+		form.ShowDialog(this);
+		if (form.Report == null || base.IsDisposed)
+		{
+			return;
+		}
+		_lastPreflightSummary = "上次体检：" + form.Report.Verdict + " · " + form.Report.CheckedAt.ToString("HH:mm");
+		_lastPreflightSeverity = ((form.Report.ErrorCount > 0) ? PreflightSeverity.Error : ((form.Report.WarningCount > 0) ? PreflightSeverity.Warning : PreflightSeverity.Ok));
+		_diagnosticsHint.Text = _lastPreflightSummary;
+		ApplyDiagnosticsHintColor();
+		_toolTip.SetToolTip(_diagnosticsHint, form.Report.Verdict + "。点击“启动前体检”可重新检查。");
+	}
+
+	private void ApplyDiagnosticsHintColor()
+	{
+		if (_diagnosticsHint == null)
+		{
+			return;
+		}
+		if (!_lastPreflightSeverity.HasValue)
+		{
+			_diagnosticsHint.ForeColor = Theme.Subtle;
+			return;
+		}
+		_diagnosticsHint.ForeColor = _lastPreflightSeverity.Value switch
+		{
+			PreflightSeverity.Error => Theme.Danger, 
+			PreflightSeverity.Warning => Theme.Warning, 
+			PreflightSeverity.Ok => Theme.Success, 
+			_ => Theme.Muted, 
+		};
 	}
 
 	private void ConfigLink_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)

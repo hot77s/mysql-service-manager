@@ -19,7 +19,7 @@ internal sealed class SetupForm : Form
 
 	private const string AppProductName = "MySQL管家";
 
-	private const string AppVersion = "1.4.7";
+	private const string AppVersion = "1.5.0";
 
 	private const string Publisher = "77's";
 

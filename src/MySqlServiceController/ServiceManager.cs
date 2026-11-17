@@ -375,6 +375,24 @@ internal static class ServiceManager
 		return snapshot.ImagePath;
 	}
 
+	public static string TryGetRawImagePath(string serviceName)
+	{
+		if (!IsValidServiceName(serviceName))
+		{
+			return string.Empty;
+		}
+		try
+		{
+			using RegistryKey registryKey = Registry.LocalMachine.OpenSubKey("SYSTEM\\CurrentControlSet\\Services\\" + serviceName.Trim(), writable: false);
+			object value = registryKey?.GetValue("ImagePath");
+			return value?.ToString() ?? string.Empty;
+		}
+		catch
+		{
+			return string.Empty;
+		}
+	}
+
 	private static string GetStartupType(int value)
 	{
 		return value switch

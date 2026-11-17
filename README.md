@@ -1,6 +1,6 @@
 # MySQL管家
 
-一个面向 Windows 的 MySQL 服务管理小工具：启动 / 停止服务、查看运行状态、打开 MySQL Workbench，并检查 Workbench 更新。
+一个面向 Windows 的 MySQL 服务管理小工具：启动 / 停止服务、查看运行状态、打开 MySQL Workbench，并在启动前做体检、直接查看 MySQL 错误日志。
 
 界面采用 macOS 风格的卡片与胶囊按钮，支持浅色 / 深色 / 跟随系统三档主题。
 
@@ -10,11 +10,17 @@
 
 - 启动 / 停止 Windows MySQL 服务，状态每 2 秒自动刷新
 - 显示服务名称、启动类型、运行账户、`mysqld.exe` 路径
+- **启动前体检**：检查服务注册、`mysqld.exe`、`my.ini`、数据目录、端口占用、错误日志与磁盘空间，提前指出启动失败的原因
+- **错误日志查看器**：自动定位 `.err`，支持自动刷新、关键字筛选、只看错误 / 警告、错误行高亮，可打开所在文件夹或用记事本打开
 - 一键打开 MySQL Workbench，并检查 Workbench 新版本
 - 自动检测本机 MySQL / MariaDB 服务，可手动输入服务名
 - 启动类型与运行账户只读展示，避免误改系统服务配置
 - 浅色 / 深色 / 跟随系统主题
 - 高 DPI 适配；窗口启动时按内容最小尺寸居中，可拖动
+
+![启动前体检](docs/screenshots/preflight.png)
+
+![错误日志](docs/screenshots/errorlog.png)
 
 ![设置页](docs/screenshots/settings.png)
 
@@ -31,7 +37,7 @@
 默认安装到 `%LOCALAPPDATA%\Programs\MySQLManager`；也可以指定目录：
 
 ```bat
-MySQL-Manager-1.4.7-Setup.exe --install-dir "D:\Software\MySQL Manager"
+MySQL-Manager-1.5.0-Setup.exe --install-dir "D:\Software\MySQL Manager"
 ```
 
 便携版可直接运行 `MySQLManager.exe`，但安装包会创建开始菜单 / 桌面快捷方式与卸载项。
@@ -41,8 +47,10 @@ MySQL-Manager-1.4.7-Setup.exe --install-dir "D:\Software\MySQL Manager"
 1. 打开软件，会自动读取当前配置的 MySQL 服务（默认 `MySQL84`）。
 2. 如未检测到，点“自动检测”，或手动填写 `services.msc` 中的服务名。
 3. 点“启动服务” / “停止服务”；首次操作会弹出 UAC 提权。
-4. “Workbench” 按钮只打开 Workbench，不会启动数据库服务。
-5. 设置页可修改服务名、`mysqld.exe` 路径与主题。
+4. 启动失败时，点提示条上的“启动前体检”，或在主界面点“启动前体检”，查看具体原因。
+5. “错误日志”可直接查看 MySQL 的 `.err` 文件，支持筛选与只看错误。
+6. “Workbench” 按钮只打开 Workbench，不会启动数据库服务。
+7. 设置页可修改服务名、`mysqld.exe` 路径与主题。
 
 配置保存在：
 
@@ -63,7 +71,7 @@ dotnet build src/MySqlServiceController/MySQLServiceController.csproj -c Release
 :: 安装器（先把主程序与说明放入 payload.*）
 copy src\MySqlServiceController\bin\Release\MySQLManager.exe src\Installer\payload.app
 copy src\MySqlServiceController\bin\Release\MySQLManager.exe.config src\Installer\payload.config
-copy dist\1.4.7\使用说明.txt src\Installer\payload.guide
+copy dist\1.5.0\使用说明.txt src\Installer\payload.guide
 dotnet build src/Installer/Uninstall.csproj -c Release
 ```
 
@@ -80,7 +88,7 @@ src/Installer/                安装 / 卸载程序
 assets/icons2/                应用图标母版（SVG / PNG / ICO）
 docs/screenshots/             README 截图
 CHANGELOG.md                  版本记录
-更新说明-1.4.7.md              当前版本说明
+更新说明-1.5.0.md              当前版本说明
 ```
 
 ## 说明
