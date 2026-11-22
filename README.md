@@ -17,6 +17,8 @@
 - 启动类型与运行账户只读展示，避免误改系统服务配置
 - 浅色 / 深色 / 跟随系统主题
 - 高 DPI 适配；窗口启动时按内容最小尺寸居中，可拖动
+- **安装程序与主界面同风格**（跟随系统 / 浅色 / 深色），支持「仅当前用户 / 所有用户」安装，装完自动关闭
+- **主界面内置「安装组件」**：一键安装 MySQL 服务与 MySQL Workbench，版本可选（默认最新版），安装路径可选（默认 `D:\Program Files`），带下载进度与已装检测
 
 ![启动前体检](docs/screenshots/preflight.png)
 
@@ -32,12 +34,34 @@
 
 ## 安装
 
-从 [Releases](../../releases) 下载最新的 `MySQL-Manager-x.y.z-Setup.exe`，按向导安装。
+从 [Releases](../../releases) 下载 `MySQL-Manager-1.6.0-Setup.exe`，双击运行。安装界面与主界面同一套风格，只有两步：
 
-默认安装到 `%LOCALAPPDATA%\Programs\MySQLManager`；也可以指定目录：
+1. **安装范围**：仅当前用户（不需要管理员，默认装到 `%LOCALAPPDATA%\Programs\MySQL Manager`）；或所有用户（装到 `C:\Program Files\MySQL Manager`，开始安装时请求管理员授权）。
+2. **程序安装位置**：安装文件夹名固定为 `MySQL Manager`，可改父目录。
+
+安装程序只安装 MySQL管家 本体，装完自动关闭并按选项启动。MySQL 服务与 Workbench 在软件主界面里安装：
+
+![安装程序](docs/screenshots/installer-light.png)
+
+深色主题下是同一套布局：
+
+![安装程序深色](docs/screenshots/installer-dark.png)
+
+## 安装 MySQL 组件
+
+主界面工具栏点「安装组件」，在弹窗里勾选要装的组件、选版本与安装位置，点「开始安装」：
+
+![安装组件](docs/screenshots/components-light.png)
+
+- **MySQL 服务**：默认最新版（内置 26.10.0 / 26.7.0 / 9.7.2 / 8.4.11 LTS / 8.0.45，启动时会联网核对 winget 清单），默认装到 `D:\Program Files\MySQL\MySQL Server <版本>`；可勾选「初始化数据目录并注册为 Windows 服务」。
+- **MySQL Workbench**：版本 26.10.0 / 26.7.0，默认装到 `D:\Program Files\MySQL\MySQL Workbench <版本>`。
+- 安装包按需从 `cdn.mysql.com` 下载（服务约 120–180 MB，Workbench 约 260 MB），窗口底部显示下载百分比与大小；普通权限下会请求一次 UAC，由隐藏的提权子进程完成安装。
+
+静默安装（仅本程序）：
 
 ```bat
-MySQL-Manager-1.5.0-Setup.exe --install-dir "D:\Software\MySQL Manager"
+MySQL-Manager-1.6.0-Setup.exe --silent-install --install-dir "D:\Software\MySQL Manager"
+MySQL-Manager-1.6.0-Setup.exe --silent-install --scope machine --no-launch
 ```
 
 便携版可直接运行 `MySQLManager.exe`，但安装包会创建开始菜单 / 桌面快捷方式与卸载项。
@@ -71,7 +95,7 @@ dotnet build src/MySqlServiceController/MySQLServiceController.csproj -c Release
 :: 安装器（先把主程序与说明放入 payload.*）
 copy src\MySqlServiceController\bin\Release\MySQLManager.exe src\Installer\payload.app
 copy src\MySqlServiceController\bin\Release\MySQLManager.exe.config src\Installer\payload.config
-copy dist\1.5.0\使用说明.txt src\Installer\payload.guide
+copy dist\1.6.0\使用说明.txt src\Installer\payload.guide
 dotnet build src/Installer/Uninstall.csproj -c Release
 ```
 
@@ -88,7 +112,7 @@ src/Installer/                安装 / 卸载程序
 assets/icons2/                应用图标母版（SVG / PNG / ICO）
 docs/screenshots/             README 截图
 CHANGELOG.md                  版本记录
-更新说明-1.5.0.md              当前版本说明
+更新说明-1.6.0.md              当前版本说明
 ```
 
 ## 说明

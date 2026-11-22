@@ -1,95 +1,148 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
-using System.Reflection;
-using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading;
 using System.Windows.Forms;
-using Microsoft.Win32;
 
 namespace MySqlServiceController.Setup;
 
 internal sealed class SetupForm : Form
 {
-	[DllImport("shell32.dll")]
-	private static extern void SHChangeNotify(int eventId, int flags, IntPtr item1, IntPtr item2);
+	private enum BannerKind
+	{
+		Info,
+		Success,
+		Warning,
+		Error
+	}
 
-	private const string AppProductName = "MySQL管家";
-
-	private const string AppVersion = "1.5.0";
-
-	private const string Publisher = "77's";
-
-	private const string MainExecutableName = "MySQLManager.exe";
-
-	private const string LegacyExecutableName = "MySQLServiceController.exe";
-
-	private const string UninstallKeyPath = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\MySQLServiceController";
+	private const int WindowWidth = 720;
 
 	private readonly bool _uninstallMode;
 
-	private readonly List<string> _warnings = new List<string>();
+	private readonly List<Action> _themeActions = new List<Action>();
 
-	private CheckBox _desktopShortcutCheck;
+	private readonly List<Action> _layoutActions = new List<Action>();
 
-	private CheckBox _launchCheck;
+	private readonly System.Windows.Forms.Timer _pollTimer;
 
-	private Label _statusLabel;
+	private readonly System.Windows.Forms.Timer _autoCloseTimer;
 
-	private SetupButton _primaryButton;
+	private Panel _header;
 
-	private TextBox _installPathTextBox;
+	private Panel _content;
 
-	private string _installDirectory;
+	private Panel _footer;
+
+	private Label _titleLabel;
+
+	private Label _subtitleLabel;
+
+	private PillButton[] _themeButtons;
+
+	private CardPanel _scopeCard;
+
+	private NumberBadge _scopeBadge;
+
+	private Label _scopeTitle;
+
+	private Label _scopeHint;
+
+	private SegmentedControl _scopeSegment;
+
+	private CardPanel _pathCard;
+
+	private NumberBadge _pathBadge;
+
+	private Label _pathTitle;
+
+	private Label _pathHint;
+
+	private PathField _appPathField;
+
+	private PillButton _appBrowseButton;
+
+	private LinkLabel _appRestoreLink;
+
+	private CardPanel _summaryCard;
+
+	private NumberBadge _summaryBadge;
+
+	private Label _summaryTitle;
+
+	private Label _summaryHint;
+
+	private Label _uninstallSummaryLabel;
+
+	private SetupCheckBox _desktopCheck;
+
+	private SetupCheckBox _launchCheck;
+
+	private CardPanel _bannerCard;
+
+	private Label _bannerIcon;
+
+	private Label _bannerText;
+
+	private ProgressLine _progressLine;
+
+	private Label _authorLabel;
+
+	private PillButton _cancelButton;
+
+	private PillButton _primaryButton;
+
+	private InstallScope _scope = InstallScope.CurrentUser;
+
+	private string _appDirectory;
+
+	private bool _appPathCustom;
+
+	private bool _busy;
+
+
+	private string _statusText;
+
+	private int _statusPercent = -1;
+
+	private BannerKind _bannerKind;
+
+	private Process _elevatedProcess;
+
+	private string _jobPath;
+
+	private string _resultPath;
+
+	private string _progressPath;
+
+	private string _lastProgressLine;
+
+	private float _scale = 1f;
+
+	private int _themeIndex;
+
+	private readonly string[] _themeLabels = new string[3] { "系统", "浅色", "深色" };
 
 	internal static string InstallDirectoryOverride;
 
-	internal static string DefaultInstallDirectory
-	{
-		get
-		{
-			string environmentVariable = Environment.GetEnvironmentVariable("MYSQLSC_INSTALL_DIR");
-			if (string.Equals(Environment.GetEnvironmentVariable("MYSQLSC_TEST_MODE"), "1", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(environmentVariable))
-			{
-				return Path.GetFullPath(environmentVariable);
-			}
-			return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "MySQLManager");
-		}
-	}
-
-	private string InstalledExecutable => Path.Combine(_installDirectory, MainExecutableName);
-
-	private string UninstallExecutable => Path.Combine(_installDirectory, "Uninstall.exe");
-
-	private static string UserDataDirectory
-	{
-		get
-		{
-			string environmentVariable = Environment.GetEnvironmentVariable("MYSQLSC_DATA_DIR");
-			if (!string.IsNullOrWhiteSpace(environmentVariable))
-			{
-				return Path.GetFullPath(environmentVariable);
-			}
-			return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MySQLServiceController");
-		}
-	}
+	internal static InstallScope? ScopeOverride;
 
 	public SetupForm(bool uninstallMode)
 	{
 		_uninstallMode = uninstallMode;
-		_installDirectory = GetInitialInstallDirectory(uninstallMode);
 		Text = (uninstallMode ? "卸载 MySQL管家" : "安装 MySQL管家");
-		base.ClientSize = new Size(600, 514);
 		base.StartPosition = FormStartPosition.CenterScreen;
-		base.FormBorderStyle = FormBorderStyle.FixedDialog;
+		base.FormBorderStyle = FormBorderStyle.FixedSingle;
 		base.MaximizeBox = false;
 		base.MinimizeBox = false;
-		BackColor = SetupTheme.Background;
-		Font = SetupTheme.Font(9.3f, FontStyle.Regular);
-		base.AutoScaleMode = AutoScaleMode.Dpi;
+		base.BackColor = SetupTheme.Background;
+		base.Font = SetupTheme.Font(9.2f, FontStyle.Regular);
+		base.AutoScaleMode = AutoScaleMode.None;
+		base.KeyPreview = false;
 		try
 		{
 			base.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
@@ -97,426 +150,546 @@ internal sealed class SetupForm : Form
 		catch
 		{
 		}
+		SetupInstaller.TryFindInstalled(out string installed, out InstallScope installedScope);
+		_scope = (ScopeOverride ?? installedScope);
+		_appDirectory = ((!string.IsNullOrWhiteSpace(installed)) ? installed : SetupInfo.DefaultAppDirectory(_scope));
+		if (!string.IsNullOrWhiteSpace(InstallDirectoryOverride))
+		{
+			_appDirectory = Path.GetFullPath(InstallDirectoryOverride);
+			_appPathCustom = true;
+		}
+		_themeIndex = (int)SetupTheme.Mode;
+		_pollTimer = new System.Windows.Forms.Timer
+		{
+			Interval = 300
+		};
+		_pollTimer.Tick += PollTimer_Tick;
+		_autoCloseTimer = new System.Windows.Forms.Timer
+		{
+			Interval = 1400
+		};
+		_autoCloseTimer.Tick += AutoCloseTimer_Tick;
 		BuildInterface();
+		ApplyTheme();
+		SetupTheme.Changed += Theme_Changed;
+		PrepareWindow();
 	}
 
-	private static string GetInitialInstallDirectory(bool uninstallMode)
+	private void Theme_Changed(object sender, EventArgs e)
 	{
-		if (!uninstallMode && !string.IsNullOrWhiteSpace(InstallDirectoryOverride))
+		if (base.IsHandleCreated && !base.IsDisposed)
 		{
-			return Path.GetFullPath(InstallDirectoryOverride);
+			ApplyTheme();
 		}
-		if (uninstallMode)
-		{
-			try
-			{
-				string directoryName = Path.GetDirectoryName(Path.GetFullPath(Application.ExecutablePath));
-				if (!string.IsNullOrWhiteSpace(directoryName) && DirectoryHasInstallation(directoryName))
-				{
-					return directoryName;
-				}
-			}
-			catch
-			{
-			}
-		}
-		try
-		{
-			using RegistryKey registryKey = Registry.CurrentUser.OpenSubKey("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\MySQLServiceController", writable: false);
-			if (registryKey != null)
-			{
-				string text = registryKey.GetValue("InstallLocation") as string;
-				if (!string.IsNullOrWhiteSpace(text) && DirectoryHasInstallation(text))
-				{
-					return Path.GetFullPath(text);
-				}
-			}
-		}
-		catch
-		{
-		}
-		return DefaultInstallDirectory;
-	}
-
-	private static bool DirectoryHasInstallation(string directory)
-	{
-		return File.Exists(Path.Combine(directory, "MySQLManager.exe")) || File.Exists(Path.Combine(directory, "MySQLServiceController.exe"));
 	}
 
 	private void BuildInterface()
 	{
 		SuspendLayout();
-		HeaderPanel headerPanel = new HeaderPanel();
-		headerPanel.Location = new Point(0, 0);
-		headerPanel.Size = new Size(600, 96);
-		base.Controls.Add(headerPanel);
-		PictureBox pictureBox = new PictureBox();
-		pictureBox.Location = new Point(30, 28);
-		pictureBox.Size = new Size(64, 64);
-		pictureBox.SizeMode = PictureBoxSizeMode.Zoom;
-		pictureBox.BackColor = Color.Transparent;
-		try
+		_scale = (float)DeviceDpi / 96f;
+		_header = new Panel
 		{
-			using Icon icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-			pictureBox.Image = icon.ToBitmap();
-		}
-		catch
-		{
-		}
-		headerPanel.Controls.Add(pictureBox);
-		Label label = new Label();
-		label.Text = (_uninstallMode ? "卸载 MySQL管家" : "安装 MySQL管家");
-		label.Location = new Point(112, 27);
-		label.Size = new Size(430, 38);
-		label.Font = SetupTheme.Font(18f, FontStyle.Bold);
-		label.ForeColor = Color.White;
-		label.BackColor = Color.Transparent;
-		label.AutoSize = true;
-		label.MaximumSize = new Size(450, 0);
-		headerPanel.Controls.Add(label);
-		Label label2 = new Label();
-		label2.Text = (_uninstallMode ? "移除程序、快捷方式和配置，不影响 MySQL 服务与数据" : ("一键启停 MySQL 服务，无需数据库密码  ·  v" + AppVersion));
-		label2.Location = new Point(114, 67);
-		label2.Size = new Size(430, 24);
-		label2.Font = SetupTheme.Font(9f, FontStyle.Regular);
-		label2.ForeColor = Color.FromArgb(225, 235, 255);
-		label2.BackColor = Color.Transparent;
-		label2.AutoSize = true;
-		label2.MaximumSize = new Size(450, 0);
-		headerPanel.Controls.Add(label2);
-		Panel panel = new Panel();
-		panel.Location = new Point(28, 96);
-		panel.Size = new Size(544, 314);
-		panel.BackColor = SetupTheme.Surface;
-		panel.Paint += Card_Paint;
-		base.Controls.Add(panel);
-		panel.BringToFront();
-		Label label3 = new Label();
-		label3.Text = (_uninstallMode ? "将从当前用户账户中卸载程序，并移除开始菜单和桌面快捷方式。" : "程序将安装到所选目录，不需要管理员权限。");
-		label3.Location = new Point(24, 20);
-		label3.Size = new Size(490, 24);
-		label3.Font = SetupTheme.Font(9.2f, FontStyle.Regular);
-		label3.ForeColor = SetupTheme.Text;
-		label3.AutoSize = true;
-		label3.MaximumSize = new Size(496, 0);
-		panel.Controls.Add(label3);
-		Label label4 = new Label();
-		label4.Text = "安装位置";
-		label4.Location = new Point(24, 60);
-		label4.Size = new Size(120, 20);
-		label4.Font = SetupTheme.Font(8.6f, FontStyle.Bold);
-		label4.ForeColor = SetupTheme.Muted;
-		label4.AutoSize = true;
-		panel.Controls.Add(label4);
-		_installPathTextBox = new TextBox();
-		_installPathTextBox.Text = _installDirectory;
-		_installPathTextBox.Location = new Point(24, 82);
-		_installPathTextBox.Size = new Size(390, 30);
-		_installPathTextBox.Font = SetupTheme.Font(8.2f, FontStyle.Regular);
-		_installPathTextBox.ForeColor = SetupTheme.Text;
-		_installPathTextBox.BackColor = (_uninstallMode ? Color.FromArgb(247, 249, 252) : SetupTheme.Surface);
-		_installPathTextBox.BorderStyle = BorderStyle.FixedSingle;
-		_installPathTextBox.ReadOnly = _uninstallMode;
-		_installPathTextBox.SelectionStart = 0;
-		_installPathTextBox.SelectionLength = 0;
-		panel.Controls.Add(_installPathTextBox);
-		if (!_uninstallMode)
-		{
-			SetupButton setupButton = new SetupButton();
-			setupButton.Text = "浏览…";
-			setupButton.Location = new Point(430, 115);
-			setupButton.Size = new Size(90, 32);
-			setupButton.NormalColor = Color.FromArgb(235, 241, 253);
-			setupButton.ForeColor = SetupTheme.Accent;
-			setupButton.Font = SetupTheme.Font(8.8f, FontStyle.Bold);
-			setupButton.SurfaceColor = SetupTheme.Surface;
-			setupButton.Click += BrowseButton_Click;
-			panel.Controls.Add(setupButton);
-			LinkLabel linkLabel = new LinkLabel();
-			linkLabel.Text = "恢复默认位置";
-			linkLabel.Location = new Point(24, 119);
-			linkLabel.Size = new Size(120, 22);
-			linkLabel.Font = SetupTheme.Font(8.3f, FontStyle.Regular);
-			linkLabel.LinkColor = SetupTheme.Accent;
-			linkLabel.ActiveLinkColor = SetupTheme.AccentDark;
-			linkLabel.VisitedLinkColor = SetupTheme.Accent;
-			linkLabel.LinkBehavior = LinkBehavior.HoverUnderline;
-			linkLabel.BackColor = SetupTheme.Surface;
-			linkLabel.LinkClicked += RestoreDefaultLink_LinkClicked;
-			panel.Controls.Add(linkLabel);
-		}
-		else
-		{
-			Label label5 = new Label();
-			label5.Text = "卸载程序将从该目录移除已安装文件。";
-			label5.Location = new Point(24, 118);
-			label5.Size = new Size(496, 20);
-			label5.Font = SetupTheme.Font(8.3f, FontStyle.Regular);
-			label5.ForeColor = SetupTheme.Subtle;
-			label5.BackColor = SetupTheme.Surface;
-			label5.AutoSize = true;
-			label5.MaximumSize = new Size(496, 0);
-			panel.Controls.Add(label5);
-		}
-		Panel panel2 = new Panel();
-		panel2.Location = new Point(24, 150);
-		panel2.Size = new Size(496, 1);
-		panel2.BackColor = SetupTheme.Border;
-		panel.Controls.Add(panel2);
-		if (!_uninstallMode)
-		{
-			_desktopShortcutCheck = MakeCheckBox("创建桌面快捷方式", 24, 164, 460, isChecked: true);
-			panel.Controls.Add(_desktopShortcutCheck);
-			_launchCheck = MakeCheckBox("安装完成后启动程序", 24, 196, 460, isChecked: true);
-			panel.Controls.Add(_launchCheck);
-			Label label6 = new Label();
-			label6.Text = "权限说明";
-			label6.Location = new Point(24, 231);
-			label6.Size = new Size(100, 20);
-			label6.Font = SetupTheme.Font(8.8f, FontStyle.Bold);
-			label6.ForeColor = SetupTheme.Text;
-			label6.AutoSize = true;
-			panel.Controls.Add(label6);
-			Label label7 = new Label();
-			label7.Text = "安装本身不需要管理员权限。点击“启动服务”或“停止服务”时，Windows 会弹出 UAC 授权窗口；程序不会保存 MySQL 账号或密码。";
-			label7.Location = new Point(24, 254);
-			label7.Size = new Size(490, 48);
-			label7.Font = SetupTheme.Font(8.4f, FontStyle.Regular);
-			label7.ForeColor = SetupTheme.Muted;
-			label7.AutoSize = true;
-			label7.MaximumSize = new Size(490, 0);
-			panel.Controls.Add(label7);
-		}
-		else
-		{
-			Label label8 = new Label();
-			label8.Text = "程序配置、日志和快捷方式将全部清理，不会删除 MySQL 数据。";
-			label8.Location = new Point(24, 166);
-			label8.Size = new Size(490, 24);
-			label8.Font = SetupTheme.Font(8.8f, FontStyle.Regular);
-			label8.ForeColor = SetupTheme.Text;
-			label8.BackColor = SetupTheme.Surface;
-			label8.AutoSize = true;
-			label8.MaximumSize = new Size(490, 0);
-			panel.Controls.Add(label8);
-			Label label9 = new Label();
-			label9.Text = "安全说明";
-			label9.Location = new Point(24, 212);
-			label9.Size = new Size(100, 20);
-			label9.Font = SetupTheme.Font(8.8f, FontStyle.Bold);
-			label9.ForeColor = SetupTheme.Text;
-			label9.AutoSize = true;
-			panel.Controls.Add(label9);
-			Label label10 = new Label();
-			label10.Text = "卸载不会停止或删除 Windows MySQL 服务，也不会删除数据库文件。程序配置、日志和临时文件会一并清理。";
-			label10.Location = new Point(24, 235);
-			label10.Size = new Size(490, 42);
-			label10.Font = SetupTheme.Font(8.4f, FontStyle.Regular);
-			label10.ForeColor = SetupTheme.Muted;
-			label10.AutoSize = true;
-			label10.MaximumSize = new Size(490, 0);
-			panel.Controls.Add(label10);
-		}
-		_statusLabel = new Label();
-		_statusLabel.Text = string.Empty;
-		_statusLabel.Location = new Point(118, 414);
-		_statusLabel.Size = new Size(272, 24);
-		_statusLabel.Font = SetupTheme.Font(8.5f, FontStyle.Regular);
-		_statusLabel.ForeColor = SetupTheme.Muted;
-		_statusLabel.AutoSize = true;
-		base.Controls.Add(_statusLabel);
-		Label label11 = new Label();
-		label11.Text = "作者  77's";
-		label11.Location = new Point(30, 414);
-		label11.Size = new Size(82, 24);
-		label11.Font = SetupTheme.Font(8.5f, FontStyle.Regular);
-		label11.ForeColor = SetupTheme.Muted;
-		label11.BackColor = SetupTheme.Background;
-		label11.AutoSize = true;
-		base.Controls.Add(label11);
-		SetupButton setupButton2 = new SetupButton();
-		setupButton2.Text = "取消";
-		setupButton2.Location = new Point(344, 446);
-		setupButton2.Size = new Size(108, 42);
-		setupButton2.NormalColor = Color.FromArgb(235, 238, 244);
-		setupButton2.ForeColor = SetupTheme.Text;
-		setupButton2.Click += delegate
-		{
-			Close();
+			Dock = DockStyle.Top,
+			Height = Dp(74),
+			BackColor = SetupTheme.Background
 		};
-		base.Controls.Add(setupButton2);
-		_primaryButton = new SetupButton();
-		_primaryButton.Text = (_uninstallMode ? "卸载" : "安装");
-		_primaryButton.Location = new Point(464, 446);
-		_primaryButton.Size = new Size(108, 42);
-		_primaryButton.NormalColor = (_uninstallMode ? SetupTheme.Danger : SetupTheme.Accent);
+		base.Controls.Add(_header);
+		_content = new Panel
+		{
+			Dock = DockStyle.Fill,
+			AutoScroll = true,
+			BackColor = SetupTheme.Background
+		};
+		base.Controls.Add(_content);
+		_footer = new Panel
+		{
+			Dock = DockStyle.Bottom,
+			Height = Dp(118),
+			BackColor = SetupTheme.Background
+		};
+		base.Controls.Add(_footer);
+		_content.BringToFront();
+		_titleLabel = MakeLabel(_header, _uninstallMode ? "卸载 MySQL管家" : "安装 MySQL管家", 24, 16, 420, 34, SetupTheme.Font(17f, FontStyle.Bold), () => SetupTheme.Text);
+		_subtitleLabel = MakeLabel(_header, _uninstallMode ? "移除程序、快捷方式与配置，不影响 MySQL 服务与数据库" : ("选择安装范围与程序位置  ·  v" + SetupInfo.AppVersion), 24, 50, 480, 20, SetupTheme.Font(9f, FontStyle.Regular), () => SetupTheme.Muted);
+		_themeButtons = new PillButton[3];
+		for (int i = 0; i < 3; i++)
+		{
+			PillButton pillButton = new PillButton
+			{
+				Text = _themeLabels[i],
+				Font = SetupTheme.Font(8.4f, FontStyle.Bold),
+				Radius = 8f
+			};
+			int index = i;
+			pillButton.Click += delegate
+			{
+				_themeIndex = index;
+				SetupTheme.SetMode((SetupThemeMode)index);
+				ApplyTheme();
+			};
+			_themeActions.Add(delegate
+			{
+				bool flag = index == _themeIndex;
+				pillButton.NormalColor = (flag ? SetupTheme.Accent : SetupTheme.SurfaceAlt);
+				pillButton.HoverColor = (flag ? SetupTheme.AccentDark : SetupTheme.Mix(SetupTheme.SurfaceAlt, SetupTheme.Accent, 0.18));
+				pillButton.PressedColor = (flag ? SetupTheme.AccentDark : SetupTheme.Mix(SetupTheme.SurfaceAlt, SetupTheme.Accent, 0.28));
+				pillButton.ForeColor = (flag ? Color.White : SetupTheme.Muted);
+				pillButton.SurfaceColor = SetupTheme.Background;
+			});
+			_themeButtons[i] = pillButton;
+			_header.Controls.Add(pillButton);
+		}
+		if (_uninstallMode)
+		{
+			BuildUninstallLayout();
+		}
+		else
+		{
+			BuildInstallLayout();
+		}
+		_bannerCard = new CardPanel
+		{
+			Radius = Dp(12),
+			FillColor = SetupTheme.AccentSoft
+		};
+		_footer.Controls.Add(_bannerCard);
+		_bannerIcon = MakeLabel(_bannerCard, "i", 14, 12, 18, 20, SetupTheme.Font(10f, FontStyle.Bold), () => SetupTheme.Accent);
+		_bannerIcon.TextAlign = ContentAlignment.MiddleCenter;
+		_bannerText = MakeLabel(_bannerCard, string.Empty, 38, 8, 400, 32, SetupTheme.Font(8.6f, FontStyle.Regular), () => SetupTheme.Text);
+		_bannerText.AutoSize = false;
+		_bannerText.TextAlign = ContentAlignment.MiddleLeft;
+		_progressLine = new ProgressLine
+		{
+			Visible = false
+		};
+		_footer.Controls.Add(_progressLine);
+		_authorLabel = MakeLabel(_footer, "作者  77's  ·  v" + SetupInfo.AppVersion, 24, 0, 260, 20, SetupTheme.Font(8.4f, FontStyle.Regular), () => SetupTheme.Muted);
+		_cancelButton = new PillButton
+		{
+			Text = "取消",
+			Font = SetupTheme.Font(9.2f, FontStyle.Bold),
+			Radius = 10f
+		};
+		_cancelButton.Click += delegate
+		{
+			if (!_busy)
+			{
+				Close();
+			}
+		};
+		_themeActions.Add(delegate
+		{
+			_cancelButton.NormalColor = SetupTheme.NeutralSoft;
+			_cancelButton.HoverColor = SetupTheme.Mix(SetupTheme.NeutralSoft, SetupTheme.Text, 0.06);
+			_cancelButton.PressedColor = SetupTheme.Mix(SetupTheme.NeutralSoft, SetupTheme.Text, 0.12);
+			_cancelButton.ForeColor = SetupTheme.Text;
+			_cancelButton.DisabledColor = SetupTheme.NeutralSoft;
+			_cancelButton.DisabledTextColor = SetupTheme.Subtle;
+			_cancelButton.SurfaceColor = SetupTheme.Background;
+		});
+		_footer.Controls.Add(_cancelButton);
+		_primaryButton = new PillButton
+		{
+			Text = (_uninstallMode ? "卸载" : "开始安装"),
+			Font = SetupTheme.Font(9.4f, FontStyle.Bold),
+			Radius = 10f
+		};
 		_primaryButton.Click += PrimaryButton_Click;
-		base.Controls.Add(_primaryButton);
+		_themeActions.Add(delegate
+		{
+			_primaryButton.NormalColor = (_uninstallMode ? SetupTheme.Danger : SetupTheme.Accent);
+			_primaryButton.HoverColor = (_uninstallMode ? SetupTheme.Mix(SetupTheme.Danger, Color.White, 0.1) : SetupTheme.Mix(SetupTheme.Accent, Color.White, 0.12));
+			_primaryButton.PressedColor = (_uninstallMode ? SetupTheme.Mix(SetupTheme.Danger, Color.Black, 0.12) : SetupTheme.Mix(SetupTheme.Accent, Color.Black, 0.12));
+			_primaryButton.ForeColor = Color.White;
+			_primaryButton.DisabledColor = SetupTheme.NeutralSoft;
+			_primaryButton.DisabledTextColor = SetupTheme.Subtle;
+			_primaryButton.SurfaceColor = SetupTheme.Background;
+		});
+		_footer.Controls.Add(_primaryButton);
 		base.AcceptButton = _primaryButton;
-		base.CancelButton = setupButton2;
-		base.Shown += delegate
+		base.CancelButton = _cancelButton;
+		base.FormClosing += SetupForm_FormClosing;
+		ResumeLayout(performLayout: true);
+		LayoutAll();
+		SetStatus(BannerKind.Info, DefaultHint(), -1);
+	}
+
+	private void BuildInstallLayout()
+	{
+		_scopeCard = new CardPanel();
+		_content.Controls.Add(_scopeCard);
+		_themeActions.Add(delegate
 		{
-			_primaryButton.Focus();
+			_scopeCard.FillColor = SetupTheme.Surface;
+			_scopeCard.BorderColor = Color.Transparent;
+		});
+		_scopeBadge = new NumberBadge(1, Dp(22));
+		_scopeCard.Controls.Add(_scopeBadge);
+		_scopeTitle = MakeLabel(_scopeCard, "安装范围", 0, 0, 200, 24, SetupTheme.Font(10.2f, FontStyle.Bold), () => SetupTheme.Text);
+		_scopeTitle.TextAlign = ContentAlignment.MiddleLeft;
+		_scopeHint = MakeLabel(_scopeCard, "需要管理员授权", 0, 0, 260, 20, SetupTheme.Font(8.4f, FontStyle.Regular), () => SetupTheme.Subtle);
+		_scopeHint.TextAlign = ContentAlignment.MiddleRight;
+		_scopeSegment = new SegmentedControl
+		{
+			Items = new string[2] { "仅当前用户", "所有用户" },
+			SelectedIndex = ((_scope == InstallScope.AllUsers) ? 1 : 0)
 		};
-		ResumeLayout(performLayout: false);
-	}
-
-	private static CheckBox MakeCheckBox(string text, int x, int y, int width, bool isChecked)
-	{
-		CheckBox checkBox = new CheckBox();
-		checkBox.Text = text;
-		checkBox.Location = new Point(x, y);
-		checkBox.Size = new Size(width, 24);
-		checkBox.Font = SetupTheme.Font(8.8f, FontStyle.Regular);
-		checkBox.ForeColor = SetupTheme.Text;
-		checkBox.BackColor = SetupTheme.Surface;
-		checkBox.Checked = isChecked;
-		checkBox.AutoSize = true;
-		checkBox.MaximumSize = new Size(width, 0);
-		return checkBox;
-	}
-
-	private static void Card_Paint(object sender, PaintEventArgs e)
-	{
-		if (!(sender is Control control))
+		_scopeSegment.SelectedIndexChanged += delegate
 		{
-			return;
-		}
-		using Pen pen = new Pen(SetupTheme.Border);
-		e.Graphics.DrawRectangle(pen, 0, 0, control.ClientSize.Width - 1, control.ClientSize.Height - 1);
+			InstallScope scope = ((_scopeSegment.SelectedIndex == 1) ? InstallScope.AllUsers : InstallScope.CurrentUser);
+			SetScope(scope);
+		};
+		_scopeCard.Controls.Add(_scopeSegment);
+		_pathCard = new CardPanel();
+		_content.Controls.Add(_pathCard);
+		_themeActions.Add(delegate
+		{
+			_pathCard.FillColor = SetupTheme.Surface;
+			_pathCard.BorderColor = Color.Transparent;
+		});
+		_pathBadge = new NumberBadge(2, Dp(22));
+		_pathCard.Controls.Add(_pathBadge);
+		_pathTitle = MakeLabel(_pathCard, "程序安装位置", 0, 0, 240, 24, SetupTheme.Font(10.2f, FontStyle.Bold), () => SetupTheme.Text);
+		_pathHint = MakeLabel(_pathCard, "文件夹名称：" + SetupInfo.FolderName, 0, 0, 260, 20, SetupTheme.Font(8.4f, FontStyle.Regular), () => SetupTheme.Subtle);
+		_pathHint.TextAlign = ContentAlignment.MiddleRight;
+		_pathHint.TextAlign = ContentAlignment.MiddleRight;
+		_appPathField = new PathField();
+		_themeActions.Add(_appPathField.ApplyTheme);
+		_pathCard.Controls.Add(_appPathField);
+		_appBrowseButton = new PillButton
+		{
+			Text = "浏览…",
+			Font = SetupTheme.Font(8.6f, FontStyle.Bold),
+			Radius = 8f
+		};
+		_appBrowseButton.Click += delegate
+		{
+			BrowseDirectory(_appPathField, "选择 MySQL管家 的安装文件夹", delegate(string path)
+			{
+				_appDirectory = path;
+				_appPathCustom = true;
+				_appPathField.Text = path;
+			});
+		};
+		RegisterNeutralButton(_appBrowseButton);
+		_pathCard.Controls.Add(_appBrowseButton);
+		_appRestoreLink = new LinkLabel
+		{
+			Text = "恢复默认位置",
+			Font = SetupTheme.Font(8.3f, FontStyle.Regular),
+			LinkBehavior = LinkBehavior.HoverUnderline,
+			BackColor = Color.Transparent,
+			AutoSize = true
+		};
+		_appRestoreLink.LinkClicked += delegate
+		{
+			_appPathCustom = false;
+			_appDirectory = SetupInfo.DefaultAppDirectory(_scope);
+			_appPathField.Text = _appDirectory;
+		};
+		_themeActions.Add(delegate
+		{
+			_appRestoreLink.LinkColor = SetupTheme.Accent;
+			_appRestoreLink.ActiveLinkColor = SetupTheme.AccentDark;
+			_appRestoreLink.VisitedLinkColor = SetupTheme.Accent;
+		});
+		_pathCard.Controls.Add(_appRestoreLink);
+		_desktopCheck = new SetupCheckBox
+		{
+			Text = "创建桌面快捷方式",
+			Checked = true
+		};
+		_themeActions.Add(_desktopCheck.Invalidate);
+		_content.Controls.Add(_desktopCheck);
+		_launchCheck = new SetupCheckBox
+		{
+			Text = "安装完成后启动程序",
+			Checked = true
+		};
+		_themeActions.Add(_launchCheck.Invalidate);
+		_content.Controls.Add(_launchCheck);
+		_appPathField.Text = _appDirectory;
 	}
 
-	private void BrowseButton_Click(object sender, EventArgs e)
+	private void BuildUninstallLayout()
 	{
-		using FolderBrowserDialog folderBrowserDialog = new FolderBrowserDialog();
-		folderBrowserDialog.Description = "选择 MySQL管家的安装文件夹";
-		folderBrowserDialog.ShowNewFolderButton = true;
-		string text = (_installPathTextBox.Text ?? string.Empty).Trim().Trim('"');
+		_pathCard = new CardPanel();
+		_content.Controls.Add(_pathCard);
+		_themeActions.Add(delegate
+		{
+			_pathCard.FillColor = SetupTheme.Surface;
+			_pathCard.BorderColor = Color.Transparent;
+		});
+		_pathBadge = new NumberBadge(1, Dp(22));
+		_pathCard.Controls.Add(_pathBadge);
+		_pathTitle = MakeLabel(_pathCard, "安装范围与位置", 0, 0, 240, 24, SetupTheme.Font(10.2f, FontStyle.Bold), () => SetupTheme.Text);
+		_pathHint = MakeLabel(_pathCard, string.Empty, 0, 0, 300, 20, SetupTheme.Font(8.4f, FontStyle.Regular), () => SetupTheme.Subtle);
+		_pathHint.TextAlign = ContentAlignment.MiddleRight;
+		_appPathField = new PathField
+		{
+			ReadOnly = true,
+			Text = _appDirectory
+		};
+		_themeActions.Add(_appPathField.ApplyTheme);
+		_pathCard.Controls.Add(_appPathField);
+		Label scopeLabel = MakeLabel(_pathCard, string.Empty, 0, 0, 300, 20, SetupTheme.Font(8.4f, FontStyle.Regular), () => SetupTheme.Muted);
+		scopeLabel.Name = "ScopeLabel";
+		scopeLabel.Text = ((_scope == InstallScope.AllUsers) ? "当前为「所有用户」安装，卸载需要管理员授权" : "当前为「仅当前用户」安装，卸载不需要管理员权限");
+		_summaryCard = new CardPanel();
+		_content.Controls.Add(_summaryCard);
+		_themeActions.Add(delegate
+		{
+			_summaryCard.FillColor = SetupTheme.Surface;
+			_summaryCard.BorderColor = Color.Transparent;
+		});
+		_summaryBadge = new NumberBadge(2, Dp(22));
+		_summaryCard.Controls.Add(_summaryBadge);
+		_summaryTitle = MakeLabel(_summaryCard, "卸载内容", 0, 0, 200, 24, SetupTheme.Font(10.2f, FontStyle.Bold), () => SetupTheme.Text);
+		_summaryHint = MakeLabel(_summaryCard, string.Empty, 0, 0, 240, 20, SetupTheme.Font(8.4f, FontStyle.Regular), () => SetupTheme.Subtle);
+		_summaryHint.TextAlign = ContentAlignment.MiddleRight;
+		_uninstallSummaryLabel = MakeLabel(_summaryCard, "会移除：程序文件、开始菜单与桌面快捷方式、程序配置与日志。\n不会移除：MySQL 服务、数据库文件、已安装的 MySQL 服务端与 Workbench。", 0, 0, 500, 50, SetupTheme.Font(8.8f, FontStyle.Regular), () => SetupTheme.Muted);
+	}
+
+	private void RegisterNeutralButton(PillButton button)
+	{
+		_themeActions.Add(delegate
+		{
+			button.NormalColor = SetupTheme.NeutralSoft;
+			button.HoverColor = SetupTheme.Mix(SetupTheme.NeutralSoft, SetupTheme.Text, 0.06);
+			button.PressedColor = SetupTheme.Mix(SetupTheme.NeutralSoft, SetupTheme.Text, 0.12);
+			button.ForeColor = SetupTheme.Text;
+			button.DisabledColor = SetupTheme.NeutralSoft;
+			button.DisabledTextColor = SetupTheme.Subtle;
+			button.SurfaceColor = SetupTheme.Surface;
+		});
+	}
+
+	private Label MakeLabel(Control parent, string text, int x, int y, int width, int height, Font font, Func<Color> color)
+	{
+		Label label = new Label
+		{
+			Text = text,
+			Location = new Point(Dp(x), Dp(y)),
+			Size = new Size(Dp(width), Dp(height)),
+			Font = font,
+			AutoSize = false,
+			BackColor = Color.Transparent
+		};
+		_themeActions.Add(delegate
+		{
+			label.ForeColor = color();
+		});
+		parent.Controls.Add(label);
+		return label;
+	}
+
+	private void SetScope(InstallScope scope)
+	{
+		_scope = scope;
+		if (!_appPathCustom)
+		{
+			_appDirectory = SetupInfo.DefaultAppDirectory(scope);
+			_appPathField.Text = _appDirectory;
+		}
+		if (_scopeSegment != null && _scopeSegment.SelectedIndex != ((scope == InstallScope.AllUsers) ? 1 : 0))
+		{
+			_scopeSegment.SelectedIndex = ((scope == InstallScope.AllUsers) ? 1 : 0);
+		}
+		SetStatus(BannerKind.Info, (scope == InstallScope.AllUsers) ? "将安装到所有用户共用的目录，开始安装时 Windows 会请求管理员授权。" : "仅安装给当前登录用户，不需要管理员权限。", -1);
+	}
+
+	private void BrowseDirectory(PathField target, string description, Action<string> onSelected)
+	{
+		using FolderBrowserDialog dialog = new FolderBrowserDialog
+		{
+			Description = description,
+			ShowNewFolderButton = true
+		};
+		string text = (target.Text ?? string.Empty).Trim().Trim('"');
 		if (Directory.Exists(text))
 		{
-			folderBrowserDialog.SelectedPath = text;
+			dialog.SelectedPath = text;
 		}
 		else
 		{
 			try
 			{
-				string directoryName = Path.GetDirectoryName(text);
-				if (!string.IsNullOrWhiteSpace(directoryName) && Directory.Exists(directoryName))
+				string parent = Path.GetDirectoryName(text);
+				if (!string.IsNullOrWhiteSpace(parent) && Directory.Exists(parent))
 				{
-					folderBrowserDialog.SelectedPath = directoryName;
+					dialog.SelectedPath = parent;
 				}
 			}
 			catch
 			{
 			}
 		}
-		if (folderBrowserDialog.ShowDialog(this) != DialogResult.OK)
+		if (dialog.ShowDialog(this) == DialogResult.OK)
+		{
+			onSelected(Path.GetFullPath(dialog.SelectedPath));
+		}
+	}
+
+	private string DefaultHint()
+	{
+		if (_uninstallMode)
+		{
+			return "卸载只清理本程序的文件与配置，MySQL 服务和数据库文件保持不变。";
+		}
+		return "安装程序约 2 MB；MySQL 服务与 Workbench 可在主界面「安装组件」中安装。";
+	}
+
+	private void SetupForm_FormClosing(object sender, FormClosingEventArgs e)
+	{
+		if (_busy)
+		{
+			e.Cancel = true;
+			return;
+		}
+		_pollTimer.Stop();
+		_autoCloseTimer.Stop();
+		SetupTheme.Changed -= Theme_Changed;
+	}
+
+	private void PrimaryButton_Click(object sender, EventArgs e)
+	{
+		if (_busy)
 		{
 			return;
+		}
+		if (_uninstallMode)
+		{
+			StartUninstall();
+		}
+		else
+		{
+			StartInstall();
+		}
+	}
+
+	private void StartInstall()
+	{
+		if (IsApplicationRunning() && !TryCloseRunningApplication())
+		{
+			MessageBox.Show(this, "MySQL管家 正在运行，且未能关闭。\n\n请先手动退出程序后再安装。", "无法继续安装", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+			return;
+		}
+		SetupJob job = new SetupJob
+		{
+			Scope = ((_scope == InstallScope.AllUsers) ? "machine" : "user"),
+			AppDirectory = (_appPathField.Text ?? string.Empty).Trim().Trim('"'),
+			DesktopShortcut = (_desktopCheck == null || _desktopCheck.Checked),
+			Launch = (_launchCheck != null && _launchCheck.Checked)
+		};
+		if (!ValidateTargetDirectory(job.AppDirectory, "程序安装位置", showMessage: true))
+		{
+			return;
+		}
+		_appDirectory = job.AppDirectory;
+		bool needsElevation = job.InstallScope == InstallScope.AllUsers;
+		if (needsElevation && !SetupElevation.IsAdministrator)
+		{
+			RunElevated(job);
+		}
+		else
+		{
+			RunInProcess(job);
+		}
+	}
+
+	private void StartUninstall()
+	{
+		string appDirectory = (_appPathField.Text ?? string.Empty).Trim().Trim('"');
+		if (!SetupInstaller.DirectoryHasInstallation(appDirectory))
+		{
+			MessageBox.Show(this, "无法确认有效的安装目录，已取消卸载。\n\n" + appDirectory, "无法卸载", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+			return;
+		}
+		DialogResult confirm = MessageBox.Show(this, "确定要卸载 MySQL管家 吗？\n\n此操作会移除程序文件、快捷方式、程序配置与日志，但不会删除 MySQL 服务、数据库或已安装的 MySQL 组件。", "确认卸载", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
+		if (confirm != DialogResult.Yes)
+		{
+			return;
+		}
+		if (IsApplicationRunning() && !TryCloseRunningApplication())
+		{
+			MessageBox.Show(this, "MySQL管家 正在运行，且未能关闭。\n\n请先手动退出程序后再卸载。", "无法继续卸载", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+			return;
+		}
+		SetupJob job = new SetupJob
+		{
+			Uninstall = true,
+			Scope = ((_scope == InstallScope.AllUsers) ? "machine" : "user"),
+			AppDirectory = appDirectory
+		};
+		if (_scope == InstallScope.AllUsers && !SetupElevation.IsAdministrator)
+		{
+			RunElevated(job);
+		}
+		else
+		{
+			RunInProcess(job);
+		}
+	}
+
+	private bool ValidateTargetDirectory(string directory, string caption, bool showMessage, bool allowExisting = false)
+	{
+		if (string.IsNullOrWhiteSpace(directory))
+		{
+			return Fail(caption, "请填写" + caption + "。", showMessage);
 		}
 		string fullPath;
 		try
 		{
-			fullPath = Path.GetFullPath(folderBrowserDialog.SelectedPath);
+			fullPath = Path.GetFullPath(directory);
 		}
 		catch (Exception ex)
 		{
-			MessageBox.Show("所选路径无效：\n\n" + ex.Message, "安装位置无效", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-			return;
+			return Fail(caption, "路径格式无效：\n\n" + ex.Message, showMessage);
 		}
-		if (!Directory.Exists(fullPath) || IsDirectoryEmpty(fullPath) || IsOurInstallationDirectory(fullPath))
+		if (string.Equals(fullPath.TrimEnd('\\'), Path.GetPathRoot(fullPath).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
 		{
-			_installPathTextBox.Text = fullPath;
-			return;
+			return Fail(caption, "不能直接使用磁盘根目录，请选择一个专用文件夹。", showMessage);
 		}
-		string text2 = Path.Combine(fullPath, "MySQL Service Controller");
-		DialogResult dialogResult = MessageBox.Show("所选文件夹不是空文件夹，不能直接安装到其中。\n\n是否创建专用子文件夹？\n" + text2, "选择安装位置", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-		if (dialogResult == DialogResult.Yes)
+		string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+		if (IsSameOrChildPath(fullPath, windows))
 		{
-			_installPathTextBox.Text = text2;
+			return Fail(caption, "不能安装到 Windows 系统目录，请选择其他位置。", showMessage);
 		}
-	}
-
-	private void RestoreDefaultLink_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
-	{
-		_installPathTextBox.Text = DefaultInstallDirectory;
-	}
-
-	private bool PrepareSelectedInstallDirectory(bool interactive)
-	{
-		string text = (_installPathTextBox.Text ?? string.Empty).Trim().Trim('"');
-		if (string.IsNullOrWhiteSpace(text))
+		if (!allowExisting)
 		{
-			return ReportDirectoryError("请选择安装位置。", interactive);
-		}
-		string fullPath;
-		try
-		{
-			fullPath = Path.GetFullPath(text);
-		}
-		catch (Exception ex)
-		{
-			return ReportDirectoryError("安装路径无效：\n\n" + ex.Message, interactive);
-		}
-		if (string.Equals(fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), Path.GetPathRoot(fullPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
-		{
-			return ReportDirectoryError("不能直接安装到磁盘根目录，请选择一个专用文件夹。", interactive);
-		}
-		string folderPath = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-		if (IsSameOrChildPath(fullPath, folderPath))
-		{
-			return ReportDirectoryError("不能安装到 Windows 系统目录，请选择其他位置。", interactive);
-		}
-		try
-		{
-			if (Directory.Exists(fullPath))
+			try
 			{
-				if (!IsDirectoryEmpty(fullPath) && !IsOurInstallationDirectory(fullPath))
+				if (Directory.Exists(fullPath) && !IsDirectoryEmpty(fullPath) && !SetupInstaller.DirectoryHasInstallation(fullPath))
 				{
-					return ReportDirectoryError("所选文件夹不是空文件夹。\n\n请选择专用空文件夹，或先在其中创建“MySQL Service Controller”子文件夹。", interactive);
+					return Fail(caption, "所选文件夹不是空文件夹：\n\n" + fullPath + "\n\n请选择空文件夹，或使用默认的专用目录。", showMessage);
 				}
 			}
-			else
+			catch (Exception ex2)
 			{
-				Directory.CreateDirectory(fullPath);
+				return Fail(caption, "无法检查所选目录：\n\n" + ex2.Message, showMessage);
 			}
-			string path = Path.Combine(fullPath, ".write-test-" + Guid.NewGuid().ToString("N") + ".tmp");
-			using (FileStream fileStream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-			{
-				fileStream.WriteByte(0);
-			}
-			File.Delete(path);
 		}
-		catch (Exception ex2)
-		{
-			return ReportDirectoryError("无法写入所选安装位置：\n\n" + fullPath + "\n\n" + ex2.Message + "\n\n请选择当前用户可写的文件夹。", interactive);
-		}
-		_installDirectory = fullPath;
-		_installPathTextBox.Text = fullPath;
 		return true;
 	}
 
-	private bool ReportDirectoryError(string message, bool interactive)
+	private bool Fail(string caption, string message, bool showMessage)
 	{
-		if (interactive)
+		if (showMessage)
 		{
-			MessageBox.Show(message, "安装位置无效", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-			_installPathTextBox.Focus();
-			_installPathTextBox.SelectAll();
+			MessageBox.Show(this, message, caption + "无效", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
 		}
 		return false;
 	}
 
-	private static bool IsOurInstallationDirectory(string directory)
+	private static bool IsSameOrChildPath(string path, string parent)
 	{
-		try
-		{
-			return File.Exists(Path.Combine(directory, "MySQLServiceController.exe")) || File.Exists(Path.Combine(directory, "Uninstall.exe"));
-		}
-		catch
+		if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(parent))
 		{
 			return false;
 		}
+		string text = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+		string text2 = Path.GetFullPath(parent).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+		return string.Equals(text, text2, StringComparison.OrdinalIgnoreCase) || text.StartsWith(text2 + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
 	}
 
 	private static bool IsDirectoryEmpty(string directory)
@@ -531,440 +704,591 @@ internal sealed class SetupForm : Form
 		}
 	}
 
-	private static bool IsSameOrChildPath(string path, string parent)
+	private void RunInProcess(SetupJob job)
 	{
-		if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(parent))
+		SetBusy(busy: true, _uninstallMode ? "正在卸载…" : "正在安装…");
+		SetStatus(BannerKind.Info, "正在准备…", 0);
+		ThreadPool.QueueUserWorkItem(delegate
 		{
-			return false;
-		}
-		string text = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-		string text2 = Path.GetFullPath(parent).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-		if (string.Equals(text, text2, StringComparison.OrdinalIgnoreCase))
-		{
-			return true;
-		}
-		return text.StartsWith(text2 + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
-	}
-
-	private void PrimaryButton_Click(object sender, EventArgs e)
-	{
-		if (_uninstallMode)
-		{
-			Uninstall();
-		}
-		else
-		{
-			Install();
-		}
-	}
-
-	private void Install()
-	{
-		InstallCore(interactive: true);
-	}
-
-	private int InstallCore(bool interactive)
-	{
-		if (IsApplicationRunning())
-		{
-			if (!interactive)
-			{
-				return 2;
-			}
-			DialogResult dialogResult = MessageBox.Show("MySQL管家正在运行。\n\n是否关闭正在运行的程序并继续安装？", "程序正在运行", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button1);
-			if (dialogResult != DialogResult.Yes || !TryCloseRunningApplication())
-			{
-				MessageBox.Show("未能关闭正在运行的程序。\n\n如果正在启动或停止服务，请等待操作完成后再安装。", "无法继续安装", MessageBoxButtons.OK, MessageBoxIcon.Asterisk);
-				return 2;
-			}
-		}
-		if (!PrepareSelectedInstallDirectory(interactive))
-		{
-			return 3;
-		}
-		if (interactive)
-		{
-			SetBusy(busy: true, "正在安装…");
-		}
-		try
-		{
-			_warnings.Clear();
-			Directory.CreateDirectory(_installDirectory);
-			ExtractResource("payload.app", InstalledExecutable);
-			ExtractResourceIfPresent("payload.config", InstalledExecutable + ".config");
-			ExtractResourceIfPresent("payload.guide", Path.Combine(_installDirectory, "使用说明.txt"));
-			string executablePath = Application.ExecutablePath;
-			if (!string.Equals(Path.GetFullPath(executablePath), Path.GetFullPath(UninstallExecutable), StringComparison.OrdinalIgnoreCase))
-			{
-				File.Copy(executablePath, UninstallExecutable, overwrite: true);
-			}
-			DeleteLegacyInstallation();
+			SetupResult result = null;
 			try
 			{
-				WriteUninstallRegistry();
+				result = SetupRunner.Run(job, new DelegateProgress(delegate(int percent, string message)
+				{
+					PostProgress(percent, message);
+				}));
+			}
+			catch (Exception ex)
+			{
+				result = new SetupResult
+				{
+					Code = 1,
+					Title = "安装失败",
+					Message = ex.Message,
+					NeedsAttention = true
+				};
+			}
+			try
+			{
+				BeginInvoke((Action)delegate
+				{
+					Finish(result);
+				});
 			}
 			catch
 			{
-				_warnings.Add("未能写入“应用和功能”卸载信息，可运行安装目录中的 Uninstall.exe 卸载。");
 			}
+		});
+	}
+
+	private void RunElevated(SetupJob job)
+	{
+		try
+		{
+			Directory.CreateDirectory(SetupInfo.WorkRoot);
+			string token = Guid.NewGuid().ToString("N");
+			_jobPath = Path.Combine(SetupInfo.WorkRoot, "job-" + token + ".json");
+			_resultPath = Path.Combine(SetupInfo.WorkRoot, "result-" + token + ".json");
+			_progressPath = Path.Combine(SetupInfo.WorkRoot, "progress-" + token + ".log");
+			job.Save(_jobPath);
+			_lastProgressLine = null;
+			SetBusy(busy: true, "正在等待管理员授权…");
+			SetStatus(BannerKind.Info, "如果出现 Windows 授权窗口，请选择“是”。", -1);
+			_elevatedProcess = SetupElevation.StartElevatedJob(_jobPath, _resultPath, _progressPath);
+			if (_elevatedProcess == null)
+			{
+				SetBusy(busy: false, string.Empty);
+				SetStatus(BannerKind.Warning, "已取消管理员授权，未做任何更改。", -1);
+				return;
+			}
+			_pollTimer.Start();
+		}
+		catch (Exception ex)
+		{
+			SetBusy(busy: false, string.Empty);
+			SetStatus(BannerKind.Error, "无法启动安装进程：" + ex.Message, -1);
+		}
+	}
+
+	private void PostProgress(int percent, string message)
+	{
+		if (base.IsDisposed || !base.IsHandleCreated)
+		{
+			return;
+		}
+		try
+		{
+			BeginInvoke((Action)delegate
+			{
+				if (!_busy)
+				{
+					return;
+				}
+				SetStatus(BannerKind.Info, message, percent);
+				_progressLine.Visible = true;
+			});
+		}
+		catch
+		{
+		}
+	}
+
+	private void PollTimer_Tick(object sender, EventArgs e)
+	{
+		if (_busy)
+		{
+			string line = ReadLastProgress();
+			if (!string.IsNullOrWhiteSpace(line) && !string.Equals(line, _lastProgressLine, StringComparison.Ordinal))
+			{
+				_lastProgressLine = line;
+				int tab = line.IndexOf('\t');
+				if (tab > 0 && int.TryParse(line.Substring(0, tab), NumberStyles.Integer, CultureInfo.InvariantCulture, out int percent))
+				{
+					SetStatus(BannerKind.Info, line.Substring(tab + 1), percent);
+				}
+			}
+		}
+		if (File.Exists(_resultPath))
+		{
+			SetupResult result = null;
 			try
 			{
-				CreateOrRemoveShortcuts();
+				result = SetupResult.Load(_resultPath);
+			}
+			catch
+			{
+				return;
+			}
+			_pollTimer.Stop();
+			Finish(result);
+			return;
+		}
+		bool exited = false;
+		try
+		{
+			exited = _elevatedProcess != null && _elevatedProcess.HasExited;
+		}
+		catch
+		{
+		}
+		if (exited)
+		{
+			_pollTimer.Stop();
+			Finish(new SetupResult
+			{
+				Code = 1,
+				Title = "安装未完成",
+				Message = "安装进程意外结束，未收到结果。\n请查看日志：" + SetupLog.LogPath,
+				NeedsAttention = true
+			});
+		}
+	}
+
+	private string ReadLastProgress()
+	{
+		try
+		{
+			if (string.IsNullOrWhiteSpace(_progressPath) || !File.Exists(_progressPath))
+			{
+				return null;
+			}
+			using FileStream stream = new FileStream(_progressPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+			using StreamReader reader = new StreamReader(stream);
+			string text = reader.ReadToEnd().TrimEnd('\r', '\n');
+			if (text.Length == 0)
+			{
+				return null;
+			}
+			int start = text.LastIndexOf('\n');
+			return (start >= 0) ? text.Substring(start + 1).Trim() : text.Trim();
+		}
+		catch
+		{
+			return null;
+		}
+	}
+
+	private void Finish(SetupResult result)
+	{
+		_busy = false;
+		CancelButtonState(busy: false);
+		_primaryButton.Enabled = false;
+		_progressLine.Visible = false;
+		if (result == null)
+		{
+			result = new SetupResult
+			{
+				Code = 1,
+				Title = "未完成",
+				Message = "安装过程没有返回结果。",
+				NeedsAttention = true
+			};
+		}
+		if (result.Code == 0 && !result.NeedsAttention)
+		{
+			CleanupWorkFiles(includeCache: true);
+			string message = _uninstallMode ? "卸载完成，窗口即将自动关闭。" : "安装完成，窗口即将自动关闭。";
+			if (!_uninstallMode && _launchCheck != null && _launchCheck.Checked)
+			{
+				LaunchInstalledApplication();
+				message = "安装完成，正在启动 MySQL管家，窗口即将自动关闭。";
+			}
+			SetStatus(BannerKind.Success, message, 100);
+			_autoCloseTimer.Start();
+			return;
+		}
+		if (result.Code == 0)
+		{
+			CleanupWorkFiles(includeCache: true);
+			string text = (result.Message ?? string.Empty).Replace("\n", "  ");
+			if (text.Length > 260)
+			{
+				text = text.Substring(0, 260) + "…";
+			}
+			SetStatus(BannerKind.Warning, (_uninstallMode ? "卸载完成，但需要注意：" : "安装完成，但需要注意：") + text, 100);
+			_primaryButton.Text = "关闭";
+			_primaryButton.Enabled = true;
+			_primaryButton.Click -= PrimaryButton_Click;
+			_primaryButton.Click += delegate
+			{
+				Close();
+			};
+			_pollTimer.Stop();
+			try
+			{
+				MessageBox.Show(this, result.Message, result.Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+			}
+			catch
+			{
+			}
+			if (!_uninstallMode && _launchCheck != null && _launchCheck.Checked)
+			{
+				LaunchInstalledApplication();
+			}
+			return;
+		}
+		SetStatus(BannerKind.Error, (result.Title ?? "未完成") + "：" + (result.Message ?? string.Empty).Replace("\n", " "), 100);
+		_primaryButton.Text = "重试";
+		_primaryButton.Enabled = true;
+	}
+
+	private void LaunchInstalledApplication()
+	{
+		try
+		{
+			string executable = SetupInstaller.InstalledExecutable(_appDirectory);
+			if (!File.Exists(executable))
+			{
+				return;
+			}
+			ProcessStartInfo startInfo = new ProcessStartInfo(executable)
+			{
+				UseShellExecute = true,
+				WorkingDirectory = _appDirectory
+			};
+			Process.Start(startInfo);
+		}
+		catch (Exception ex)
+		{
+			SetupLog.Write("启动程序失败：" + ex.Message);
+		}
+	}
+
+	/// <summary>清理本次安装任务文件；成功时一并清掉下载缓存，避免长期占用磁盘。</summary>
+	private void CleanupWorkFiles(bool includeCache)
+	{
+		try
+		{
+			foreach (string path in new string[3] { _jobPath, _resultPath, _progressPath })
+			{
+				if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+				{
+					File.Delete(path);
+				}
+			}
+			if (includeCache)
+			{
+				string cache = Path.Combine(SetupInfo.WorkRoot, "cache");
+				if (Directory.Exists(cache))
+				{
+					Directory.Delete(cache, recursive: true);
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			SetupLog.Write("清理临时文件失败：" + ex.Message);
+		}
+	}
+	private void AutoCloseTimer_Tick(object sender, EventArgs e)
+	{
+		_autoCloseTimer.Stop();
+		if (!_busy)
+		{
+			Close();
+		}
+	}
+
+	private void CancelButtonState(bool busy)
+	{
+		_cancelButton.Enabled = !busy;
+		_busy = busy;
+		_primaryButton.Enabled = !busy;
+		if (_scopeSegment != null)
+		{
+			_scopeSegment.Enabled = !busy;
+		}
+		foreach (Control control in _content.Controls)
+		{
+			SetControlsEnabled(control, !busy);
+		}
+	}
+
+	private void SetControlsEnabled(Control parent, bool enabled)
+	{
+		foreach (Control child in parent.Controls)
+		{
+			if (child is SetupCheckBox || child is PathField || child is PillButton || child is SegmentedControl)
+			{
+				child.Enabled = enabled;
+			}
+			if (child.HasChildren)
+			{
+				SetControlsEnabled(child, enabled);
+			}
+		}
+		if (parent is SetupCheckBox || parent is PathField)
+		{
+			parent.Enabled = enabled;
+		}
+	}
+
+	private void SetBusy(bool busy, string statusText)
+	{
+		_statusText = statusText;
+		CancelButtonState(busy);
+		_progressLine.Visible = busy;
+	}
+
+	private void SetStatus(BannerKind kind, string message, int percent)
+	{
+		_bannerKind = kind;
+		_statusText = message ?? string.Empty;
+		_statusPercent = percent;
+		ApplyBanner();
+	}
+
+	private void ApplyBanner()
+	{
+		if (_bannerCard == null)
+		{
+			return;
+		}
+		Color fill;
+		Color accent;
+		string icon;
+		switch (_bannerKind)
+		{
+		case BannerKind.Success:
+			fill = SetupTheme.SuccessSoft;
+			accent = SetupTheme.Success;
+			icon = "✓";
+			break;
+		case BannerKind.Warning:
+			fill = SetupTheme.WarningSoft;
+			accent = SetupTheme.Warning;
+			icon = "!";
+			break;
+		case BannerKind.Error:
+			fill = SetupTheme.DangerSoft;
+			accent = SetupTheme.Danger;
+			icon = "!";
+			break;
+		default:
+			fill = SetupTheme.AccentSoft;
+			accent = SetupTheme.Accent;
+			icon = "i";
+			break;
+		}
+		_bannerCard.FillColor = fill;
+		_bannerIcon.ForeColor = accent;
+		_bannerIcon.Text = icon;
+		_bannerText.Text = _statusText;
+		_progressLine.Value = ((_statusPercent < 0) ? (-1.0) : ((double)_statusPercent / 100.0));
+	}
+
+	private void ApplyTheme()
+	{
+		if (_header == null)
+		{
+			return;
+		}
+		SuspendLayout();
+		try
+		{
+			DarkMode.Apply(SetupTheme.IsDark);
+			base.BackColor = SetupTheme.Background;
+			_header.BackColor = SetupTheme.Background;
+			_content.BackColor = SetupTheme.Background;
+			_footer.BackColor = SetupTheme.Background;
+			foreach (Action action in _themeActions)
+			{
 				try
 				{
-					SHChangeNotify(0x08000000, 0, IntPtr.Zero, IntPtr.Zero);
+					action();
 				}
 				catch
 				{
 				}
 			}
-			catch
+			ApplyBanner();
+			if (base.IsHandleCreated)
 			{
-				_warnings.Add("未能创建快捷方式，可直接运行安装目录中的程序。");
+				SetupNative.ApplyTitleBar(base.Handle, SetupTheme.IsDark, SetupTheme.Background, SetupTheme.Text);
 			}
-			if (_launchCheck.Checked)
-			{
-				ProcessStartInfo processStartInfo = new ProcessStartInfo(InstalledExecutable);
-				processStartInfo.UseShellExecute = true;
-				processStartInfo.WorkingDirectory = _installDirectory;
-				Process.Start(processStartInfo);
-			}
-			string text = "MySQL管家 " + AppVersion + " 已安装完成。\n\n安装位置：\n" + _installDirectory + "\n\n配置与日志会保留在原来的位置，无需重新配置。";
-			if (_warnings.Count > 0)
-			{
-				text = text + "\n\n注意：\n" + string.Join("\n", _warnings.ToArray());
-			}
-			if (interactive)
-			{
-				MessageBox.Show(text, "安装完成", MessageBoxButtons.OK, MessageBoxIcon.Asterisk);
-				Close();
-			}
-			return 0;
-		}
-		catch (Exception ex)
-		{
-			if (interactive)
-			{
-				MessageBox.Show("安装失败：\n\n" + ex.Message + "\n\n如文件被占用，请关闭程序后重试。", "安装失败", MessageBoxButtons.OK, MessageBoxIcon.Hand);
-				SetBusy(busy: false, "安装未完成");
-			}
-			return 1;
-		}
-	}
-
-	private void Uninstall()
-	{
-		if (IsApplicationRunning())
-		{
-			MessageBox.Show("MySQL管家正在运行。\n\n请先关闭主程序，再执行卸载。", "程序正在运行", MessageBoxButtons.OK, MessageBoxIcon.Asterisk);
-			return;
-		}
-		DialogResult dialogResult = MessageBox.Show("确定要卸载 MySQL管家吗？\n\n此操作会移除程序、快捷方式、程序配置和日志，但不会删除 MySQL 服务、数据库或数据文件。", "确认卸载", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
-		if (dialogResult == DialogResult.Yes)
-		{
-			UninstallCore(interactive: true);
-		}
-	}
-
-	private int UninstallCore(bool interactive)
-	{
-		if (!ValidateUninstallDirectory(interactive))
-		{
-			return 3;
-		}
-		if (IsApplicationRunning())
-		{
-			if (interactive)
-			{
-				MessageBox.Show("MySQL管家正在运行。\n\n请先关闭主程序，再执行卸载。", "程序正在运行", MessageBoxButtons.OK, MessageBoxIcon.Asterisk);
-			}
-			return 2;
-		}
-		if (interactive)
-		{
-			SetBusy(busy: true, "正在卸载…");
-		}
-		try
-		{
-			DeleteShortcut(GetStartMenuShortcutPath());
-			DeleteShortcut(GetDesktopShortcutPath());
-			using (RegistryKey registryKey = Registry.CurrentUser.OpenSubKey("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\MySQLServiceController", writable: true))
-			{
-				if (registryKey != null)
-				{
-					registryKey.Close();
-					Registry.CurrentUser.DeleteSubKeyTree("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\MySQLServiceController", throwOnMissingSubKey: false);
-				}
-			}
-			ScheduleDirectoryRemoval();
-			if (interactive)
-			{
-				MessageBox.Show("MySQL管家已卸载。\n\n程序配置、日志和临时文件已清理。\nMySQL 服务和数据库文件未作任何更改。", "卸载完成", MessageBoxButtons.OK, MessageBoxIcon.Asterisk);
-				Close();
-			}
-			return 0;
-		}
-		catch (Exception ex)
-		{
-			if (interactive)
-			{
-				MessageBox.Show("卸载失败：\n\n" + ex.Message + "\n\n请关闭程序后重试。", "卸载失败", MessageBoxButtons.OK, MessageBoxIcon.Hand);
-				SetBusy(busy: false, "卸载未完成");
-			}
-			return 1;
-		}
-	}
-
-	private bool ValidateUninstallDirectory(bool interactive)
-	{
-		string text = null;
-		try
-		{
-			string fullPath = Path.GetFullPath(_installDirectory);
-			string folderPath = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-			DirectoryInfo directoryInfo = new DirectoryInfo(fullPath);
-			if (string.Equals(fullPath, Path.GetPathRoot(fullPath), StringComparison.OrdinalIgnoreCase) || IsSameOrChildPath(fullPath, folderPath) || !directoryInfo.Exists || (directoryInfo.Attributes & FileAttributes.ReparsePoint) != 0 || !File.Exists(Path.Combine(fullPath, "Uninstall.exe")))
-			{
-				text = "无法确认有效的安装目录，已取消卸载。\n\n" + _installDirectory + "\n\n请从 Windows“应用和功能”中卸载，或运行原安装目录中的 Uninstall.exe。";
-			}
-		}
-		catch (Exception ex)
-		{
-			text = "检查安装目录失败：\n\n" + ex.Message;
-		}
-		if (text == null)
-		{
-			return true;
-		}
-		if (interactive)
-		{
-			MessageBox.Show(text, "无法卸载", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-		}
-		return false;
-	}
-
-	internal int RunSilentInstall(bool createDesktopShortcut, bool launchApplication)
-	{
-		_desktopShortcutCheck.Checked = createDesktopShortcut;
-		_launchCheck.Checked = launchApplication;
-		return InstallCore(interactive: false);
-	}
-
-	internal int RunSilentUninstall()
-	{
-		return UninstallCore(interactive: false);
-	}
-
-	private void SetBusy(bool busy, string status)
-	{
-		_primaryButton.Enabled = !busy;
-		_statusLabel.Text = status;
-		Application.DoEvents();
-	}
-
-	private static void ExtractResource(string resourceName, string destination)
-	{
-		Assembly executingAssembly = Assembly.GetExecutingAssembly();
-		using Stream stream = executingAssembly.GetManifestResourceStream(resourceName);
-		if (stream == null)
-		{
-			throw new InvalidOperationException("安装包缺少资源：" + resourceName);
-		}
-		string text = destination + ".new";
-		using (FileStream fileStream = new FileStream(text, FileMode.Create, FileAccess.Write, FileShare.None))
-		{
-			stream.CopyTo(fileStream);
-			fileStream.Flush(flushToDisk: true);
-		}
-		if (File.Exists(destination))
-		{
-			File.Replace(text, destination, null, ignoreMetadataErrors: true);
-		}
-		else
-		{
-			File.Move(text, destination);
-		}
-	}
-
-	private static void ExtractResourceIfPresent(string resourceName, string destination)
-	{
-		Assembly executingAssembly = Assembly.GetExecutingAssembly();
-		using (Stream stream = executingAssembly.GetManifestResourceStream(resourceName))
-		{
-			if (stream == null)
-			{
-				return;
-			}
-		}
-		ExtractResource(resourceName, destination);
-	}
-
-	private void CreateOrRemoveShortcuts()
-	{
-		string startMenuShortcutPath = GetStartMenuShortcutPath();
-		if (_desktopShortcutCheck.Checked)
-		{
-			string desktopShortcutPath = GetDesktopShortcutPath();
-			if (!CreateShortcut(desktopShortcutPath))
-			{
-				_warnings.Add("桌面快捷方式创建失败，可从开始菜单启动程序。");
-			}
-		}
-		else
-		{
-			DeleteShortcut(GetDesktopShortcutPath());
-		}
-		if (!CreateShortcut(startMenuShortcutPath))
-		{
-			_warnings.Add("开始菜单快捷方式创建失败，可直接运行安装目录中的程序。");
-		}
-	}
-
-	private static string GetStartMenuShortcutPath()
-	{
-		return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "MySQL管家.lnk");
-	}
-
-	private static string GetDesktopShortcutPath()
-	{
-		return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "MySQL管家.lnk");
-	}
-
-	private void DeleteLegacyInstallation()
-	{
-		string[] array = new string[2] { "MySQLServiceController.exe", "MySQLServiceController.exe.config" };
-		foreach (string text in array)
-		{
-			try
-			{
-				string path = Path.Combine(_installDirectory, text);
-				if (File.Exists(path))
-				{
-					File.Delete(path);
-				}
-			}
-			catch (Exception ex)
-			{
-				_warnings.Add("未能删除旧版文件 " + text + "：" + ex.Message);
-			}
-		}
-		try
-		{
-			DeleteShortcut(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "MySQL 服务管家.lnk"));
-			DeleteShortcut(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "MySQL 服务管家.lnk"));
-		}
-		catch
-		{
-		}
-	}
-
-	private bool CreateShortcut(string shortcutPath)
-	{
-		try
-		{
-			if (File.Exists(shortcutPath))
-			{
-				File.Delete(shortcutPath);
-			}
-		}
-		catch
-		{
-		}
-		object obj = null;
-		object obj2 = null;
-		try
-		{
-			Type typeFromProgID = Type.GetTypeFromProgID("WScript.Shell");
-			if (typeFromProgID == null)
-			{
-				return false;
-			}
-			obj = Activator.CreateInstance(typeFromProgID);
-			obj2 = typeFromProgID.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, obj, new object[1] { shortcutPath });
-			Type type = obj2.GetType();
-			type.InvokeMember("TargetPath", BindingFlags.SetProperty, null, obj2, new object[1] { InstalledExecutable });
-			type.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, obj2, new object[1] { _installDirectory });
-			type.InvokeMember("IconLocation", BindingFlags.SetProperty, null, obj2, new object[1] { InstalledExecutable + ",0" });
-			type.InvokeMember("Description", BindingFlags.SetProperty, null, obj2, new object[1] { "MySQL 服务与 Workbench 管理工具" });
-			type.InvokeMember("Save", BindingFlags.InvokeMethod, null, obj2, null);
-			return true;
-		}
-		catch
-		{
-			return false;
+			_content.BackColor = SetupTheme.Background;
 		}
 		finally
 		{
-			if (obj2 != null && Marshal.IsComObject(obj2))
-			{
-				Marshal.FinalReleaseComObject(obj2);
-			}
-			if (obj != null && Marshal.IsComObject(obj))
-			{
-				Marshal.FinalReleaseComObject(obj);
-			}
+			ResumeLayout(performLayout: true);
 		}
+		Invalidate(true);
 	}
 
-	private static void DeleteShortcut(string path)
+	protected override void OnHandleCreated(EventArgs e)
+	{
+		base.OnHandleCreated(e);
+		SetupNative.ApplyTitleBar(base.Handle, SetupTheme.IsDark, SetupTheme.Background, SetupTheme.Text);
+	}
+
+	protected override void OnDpiChanged(DpiChangedEventArgs e)
+	{
+		base.OnDpiChanged(e);
+		_scale = (float)e.DeviceDpiNew / 96f;
+		RecenterAfterDpi();
+	}
+
+	private void RecenterAfterDpi()
 	{
 		try
 		{
-			if (File.Exists(path))
-			{
-				File.Delete(path);
-			}
+			base.StartPosition = FormStartPosition.Manual;
+			Rectangle area = Screen.FromControl(this).WorkingArea;
+			base.Location = new Point(area.Left + Math.Max(0, (area.Width - base.Width) / 2), area.Top + Math.Max(0, (area.Height - base.Height) / 2));
 		}
 		catch
 		{
 		}
 	}
 
-	private void WriteUninstallRegistry()
+	private int Dp(int value)
 	{
-		using RegistryKey registryKey = Registry.CurrentUser.CreateSubKey("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\MySQLServiceController");
-		if (registryKey == null)
-		{
-			throw new InvalidOperationException("无法写入卸载信息。");
-		}
-		FileInfo fileInfo = new FileInfo(InstalledExecutable);
-		registryKey.SetValue("DisplayName", "MySQL管家");
-		registryKey.SetValue("DisplayVersion", AppVersion);
-		registryKey.SetValue("Publisher", "77's");
-		registryKey.SetValue("InstallLocation", _installDirectory);
-		registryKey.SetValue("DisplayIcon", InstalledExecutable + ",0");
-		registryKey.SetValue("UninstallString", "\"" + UninstallExecutable + "\" --uninstall");
-		registryKey.SetValue("NoModify", 1, RegistryValueKind.DWord);
-		registryKey.SetValue("NoRepair", 1, RegistryValueKind.DWord);
-		registryKey.SetValue("EstimatedSize", Math.Max(1, (int)(fileInfo.Length / 1024)));
-		registryKey.SetValue("InstallDate", DateTime.Now.ToString("yyyyMMdd"));
+		return (int)Math.Round((double)value * (double)_scale);
 	}
 
-	private static Process[] GetRunningInstances()
+	private void LayoutAll()
 	{
-		List<Process> list = new List<Process>();
-		string[] array = new string[2] { "MySQLManager", "MySQLServiceController" };
-		foreach (string processName in array)
+		if (_header == null || _content == null || _footer == null)
 		{
-			try
+			return;
+		}
+		int width = Math.Max(Dp(WindowWidth), Math.Max(Dp(620), base.ClientSize.Width));
+		int contentWidth = width - Dp(48);
+		int right = contentWidth;
+		_header.SetBounds(0, 0, width, Dp(74));
+		_titleLabel.SetBounds(Dp(24), Dp(16), Dp(420), Dp(34));
+		_subtitleLabel.SetBounds(Dp(24), Dp(50), Math.Max(Dp(240), right - Dp(260)), Dp(20));
+		int themeWidth = Dp(56);
+		int themeGap = Dp(6);
+		int themeRight = width - Dp(24);
+		for (int i = 2; i >= 0; i--)
+		{
+			_themeButtons[i].SetBounds(themeRight - themeWidth, Dp(20), themeWidth, Dp(26));
+			themeRight -= themeWidth + themeGap;
+		}
+		if (!_uninstallMode)
+		{
+			int y = Dp(6);
+			LayoutCard(_scopeCard, y, Dp(88), contentWidth);
+			_scopeBadge.SetBounds(Dp(20), Dp(16), Dp(22), Dp(22));
+			_scopeTitle.SetBounds(Dp(52), Dp(14), Dp(200), Dp(24));
+			_scopeHint.SetBounds(right - Dp(220), Dp(16), Dp(200), Dp(20));
+			_scopeSegment.SetBounds(Dp(52), Dp(46), Dp(272), Dp(32));
+			y += Dp(88) + Dp(12);
+			LayoutCard(_pathCard, y, Dp(102), contentWidth);
+			_pathBadge.SetBounds(Dp(20), Dp(16), Dp(22), Dp(22));
+			_pathTitle.SetBounds(Dp(52), Dp(14), Dp(240), Dp(24));
+			_pathHint.SetBounds(right - Dp(300), Dp(16), Dp(280), Dp(20));
+			_appPathField.SetBounds(Dp(52), Dp(44), right - Dp(52) - Dp(88) - Dp(10), Dp(32));
+			_appBrowseButton.SetBounds(right - Dp(88), Dp(44), Dp(88), Dp(32));
+			_appRestoreLink.Location = new Point(Dp(52), Dp(80));
+			y += Dp(102) + Dp(12);
+			y += Dp(14);
+			_desktopCheck.SetBounds(Dp(24), y, Dp(200), Dp(22));
+			_launchCheck.SetBounds(Dp(240), y, Dp(220), Dp(22));
+			_content.AutoScrollMinSize = new Size(0, y + Dp(30));
+		}
+		else
+		{
+			int y2 = Dp(6);
+			LayoutCard(_pathCard, y2, Dp(132), contentWidth);
+			_pathBadge.SetBounds(Dp(20), Dp(16), Dp(22), Dp(22));
+			_pathTitle.SetBounds(Dp(52), Dp(14), Dp(240), Dp(24));
+			_pathHint.SetBounds(right - Dp(300), Dp(16), Dp(280), Dp(20));
+			_appPathField.SetBounds(Dp(52), Dp(44), right - Dp(52) - Dp(20), Dp(32));
+			foreach (Control control in _pathCard.Controls)
 			{
-				list.AddRange(Process.GetProcessesByName(processName));
+				if (control.Name == "ScopeLabel")
+				{
+					control.SetBounds(Dp(52), Dp(84), right - Dp(72), Dp(20));
+				}
 			}
-			catch
+			y2 += Dp(132) + Dp(12);
+			LayoutCard(_summaryCard, y2, Dp(118), contentWidth);
+			_summaryBadge.SetBounds(Dp(20), Dp(16), Dp(22), Dp(22));
+			_summaryTitle.SetBounds(Dp(52), Dp(14), Dp(200), Dp(24));
+			_summaryHint.SetBounds(right - Dp(320), Dp(16), Dp(300), Dp(20));
+			_summaryHint.Text = "卸载不会影响数据库";
+			_uninstallSummaryLabel?.SetBounds(Dp(52), Dp(44), right - Dp(72), Dp(52));
+			_summaryHint.Visible = true;
+			_content.AutoScrollMinSize = new Size(0, y2 + Dp(118) + Dp(30));
+		}
+		int footerTop = base.ClientSize.Height - _footer.Height;
+		_footer.SetBounds(0, footerTop, width, _footer.Height);
+		int footerWidth = width;
+		_bannerCard.SetBounds(Dp(24), Dp(12), footerWidth - Dp(48), Dp(46));
+		_bannerIcon.SetBounds(Dp(14), Dp(13), Dp(18), Dp(20));
+		_bannerText.SetBounds(Dp(38), Dp(4), footerWidth - Dp(48) - Dp(60), Dp(34));
+		_progressLine.SetBounds(Dp(38), _bannerCard.Bottom - Dp(7), footerWidth - Dp(48) - Dp(60), Dp(3));
+		int buttonTop = Dp(66);
+		_primaryButton.SetBounds(footerWidth - Dp(24) - Dp(128), buttonTop, Dp(128), Dp(40));
+		_cancelButton.SetBounds(_primaryButton.Left - Dp(12) - Dp(100), buttonTop, Dp(100), Dp(40));
+		_authorLabel.SetBounds(Dp(24), buttonTop + Dp(10), Dp(300), Dp(20));
+	}
+
+	private void LayoutCard(CardPanel card, int top, int height, int contentWidth)
+	{
+		card.SetBounds(Dp(24), top, contentWidth, height);
+		card.Radius = Dp(16);
+	}
+
+	protected override void OnResize(EventArgs e)
+	{
+		base.OnResize(e);
+		if (_header != null && _content != null)
+		{
+			LayoutAll();
+		}
+	}
+
+	private Size ComputeWindowSize()
+	{
+		int contentHeight = _uninstallMode ? Dp(6 + 132 + 12 + 118 + 30) : Dp(6 + 88 + 12 + 102 + 14 + 22 + 30);
+		int height = Dp(74) + contentHeight + Dp(118);
+		return new Size(Dp(WindowWidth), height);
+	}
+
+	public void PrepareWindow()
+	{
+		Size size = ComputeWindowSize();
+		try
+		{
+			Rectangle area = Screen.FromPoint(Cursor.Position).WorkingArea;
+			int maxHeight = Math.Max(Dp(520), area.Height - Dp(32));
+			if (size.Height > maxHeight)
 			{
+				size.Height = maxHeight;
+			}
+			if (size.Width > area.Width - Dp(16))
+			{
+				size.Width = Math.Max(Dp(600), area.Width - Dp(16));
 			}
 		}
-		return list.ToArray();
+		catch
+		{
+		}
+		base.ClientSize = size;
+		LayoutAll();
 	}
 
 	private static bool IsApplicationRunning()
 	{
-		Process[] runningInstances = GetRunningInstances();
-		foreach (Process process in runningInstances)
+		Process[] processes = Process.GetProcessesByName("MySQLManager");
+		foreach (Process process in processes)
 		{
-			if (process.Id != Process.GetCurrentProcess().Id)
+			try
 			{
-				return true;
+				if (process.Id != Process.GetCurrentProcess().Id)
+				{
+					return true;
+				}
+			}
+			catch
+			{
+			}
+			finally
+			{
+				process.Dispose();
 			}
 		}
 		return false;
@@ -972,8 +1296,7 @@ internal sealed class SetupForm : Form
 
 	private static bool TryCloseRunningApplication()
 	{
-		Process[] runningInstances = GetRunningInstances();
-		foreach (Process process in runningInstances)
+		foreach (Process process in Process.GetProcessesByName("MySQLManager"))
 		{
 			try
 			{
@@ -984,6 +1307,10 @@ internal sealed class SetupForm : Form
 			}
 			catch
 			{
+			}
+			finally
+			{
+				process.Dispose();
 			}
 		}
 		for (int i = 0; i < 50; i++)
@@ -997,64 +1324,34 @@ internal sealed class SetupForm : Form
 		return !IsApplicationRunning();
 	}
 
-	private void ScheduleDirectoryRemoval()
+	internal int RunSilentInstall(bool createDesktopShortcut, bool launchApplication)
 	{
-		string fullPath = Path.GetFullPath(_installDirectory);
-		DirectoryInfo directoryInfo = new DirectoryInfo(fullPath);
-		bool flag = string.Equals(Environment.GetEnvironmentVariable("MYSQLSC_TEST_MODE"), "1", StringComparison.Ordinal);
-		if (string.Equals(fullPath, Path.GetPathRoot(fullPath), StringComparison.OrdinalIgnoreCase) || (directoryInfo.Attributes & FileAttributes.ReparsePoint) != 0 || (!File.Exists(InstalledExecutable) && !File.Exists(UninstallExecutable)))
+		SetupJob job = new SetupJob
 		{
-			throw new InvalidOperationException("安装目录校验失败，已取消删除。");
-		}
-		StringBuilder stringBuilder = new StringBuilder();
-		stringBuilder.Append("Start-Sleep -Seconds 2; ");
-		stringBuilder.Append("$installDir = ");
-		stringBuilder.Append(ToPowerShellLiteral(fullPath));
-		stringBuilder.Append("; $names = @('MySQLManager.exe',");
-		stringBuilder.Append("'MySQLManager.exe.config','使用说明.txt',");
-		stringBuilder.Append("'Uninstall.exe','MySQLServiceController.exe',");
-		stringBuilder.Append("'MySQLServiceController.exe.config'");
-		stringBuilder.Append("); ");
-		stringBuilder.Append("foreach ($name in $names) { ");
-		stringBuilder.Append("$path = Join-Path $installDir $name; ");
-		stringBuilder.Append("if (Test-Path -LiteralPath $path) { ");
-		stringBuilder.Append("Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue; ");
-		stringBuilder.Append("} }; ");
-		stringBuilder.Append("Get-ChildItem -LiteralPath $installDir -Force -Filter '*.new' ");
-		stringBuilder.Append("-ErrorAction SilentlyContinue | ");
-		stringBuilder.Append("Remove-Item -Force -ErrorAction SilentlyContinue; ");
-		stringBuilder.Append("if (-not (Get-ChildItem -LiteralPath $installDir -Force ");
-		stringBuilder.Append("-ErrorAction SilentlyContinue)) { ");
-		stringBuilder.Append("Remove-Item -LiteralPath $installDir -Force ");
-		stringBuilder.Append("-ErrorAction SilentlyContinue; }; ");
-		string fullPath2 = Path.GetFullPath(UserDataDirectory);
-		string value = Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)) + Path.DirectorySeparatorChar;
-		if (!string.Equals(Path.GetFileName(fullPath2), "MySQLServiceController", StringComparison.OrdinalIgnoreCase) || (!flag && !fullPath2.StartsWith(value, StringComparison.OrdinalIgnoreCase)))
+			Scope = ((_scope == InstallScope.AllUsers) ? "machine" : "user"),
+			AppDirectory = _appDirectory,
+			DesktopShortcut = createDesktopShortcut,
+			Launch = launchApplication
+		};
+		SetupResult result = SetupRunner.Run(job, new DelegateProgress(delegate
 		{
-			throw new InvalidOperationException("配置目录校验失败，已取消删除。");
-		}
-		stringBuilder.Append("$dataDir = ");
-		stringBuilder.Append(ToPowerShellLiteral(fullPath2));
-		stringBuilder.Append("; if (Test-Path -LiteralPath $dataDir) { ");
-		stringBuilder.Append("Remove-Item -LiteralPath $dataDir -Recurse -Force ");
-		stringBuilder.Append("-ErrorAction SilentlyContinue; }; ");
-		stringBuilder.Append("$tempDir = [IO.Path]::GetTempPath(); ");
-		stringBuilder.Append("Get-ChildItem -LiteralPath $tempDir ");
-		stringBuilder.Append("-Filter 'MySQLServiceController-*.result' ");
-		stringBuilder.Append("-ErrorAction SilentlyContinue | ");
-		stringBuilder.Append("Remove-Item -Force -ErrorAction SilentlyContinue;");
-		string text = Convert.ToBase64String(Encoding.Unicode.GetBytes(stringBuilder.ToString()));
-		string fileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell\\v1.0\\powershell.exe");
-		ProcessStartInfo processStartInfo = new ProcessStartInfo(fileName);
-		processStartInfo.Arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " + text;
-		processStartInfo.UseShellExecute = false;
-		processStartInfo.CreateNoWindow = true;
-		processStartInfo.WindowStyle = ProcessWindowStyle.Hidden;
-		Process.Start(processStartInfo);
+		}));
+		return result.Code;
 	}
 
-	private static string ToPowerShellLiteral(string value)
+	internal int RunSilentUninstall()
 	{
-		return "'" + (value ?? string.Empty).Replace("'", "''") + "'";
+		SetupJob job = new SetupJob
+		{
+			Uninstall = true,
+			Scope = ((_scope == InstallScope.AllUsers) ? "machine" : "user"),
+			AppDirectory = _appDirectory
+		};
+		SetupResult result = SetupRunner.Run(job, new DelegateProgress(delegate
+		{
+		}));
+		return result.Code;
 	}
+
+	internal string InstallDirectory => _appDirectory;
 }

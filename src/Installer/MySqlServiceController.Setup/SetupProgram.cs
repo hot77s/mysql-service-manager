@@ -30,42 +30,43 @@ internal static class SetupProgram
 	[STAThread]
 	private static void Main(string[] args)
 	{
-		bool uninstallMode = false;
-		foreach (string a in args)
+		bool uninstallMode = HasArgument(args, "--uninstall");
+		ConfigureNetwork();
+		SetupTheme.SetMode(ParseTheme(args));
+		if (!string.IsNullOrWhiteSpace(GetArgument(args, "--install-dir")))
 		{
-			if (string.Equals(a, "--uninstall", StringComparison.OrdinalIgnoreCase))
-			{
-				uninstallMode = true;
-			}
+			SetupForm.InstallDirectoryOverride = GetArgument(args, "--install-dir");
 		}
-		string installDirArgument = GetArgument(args, "--install-dir");
-		if (!string.IsNullOrWhiteSpace(installDirArgument))
+		string scopeArgument = GetArgument(args, "--scope");
+		if (!string.IsNullOrWhiteSpace(scopeArgument))
 		{
-			SetupForm.InstallDirectoryOverride = installDirArgument;
+			SetupForm.ScopeOverride = (string.Equals(scopeArgument, "machine", StringComparison.OrdinalIgnoreCase) ? InstallScope.AllUsers : InstallScope.CurrentUser);
 		}
 		Application.EnableVisualStyles();
 		Application.SetCompatibleTextRenderingDefault(defaultValue: false);
-		string argument = GetArgument(args, "--render-preview");
-		if (!string.IsNullOrWhiteSpace(argument))
+		string jobPath = GetArgument(args, "--apply-job");
+		if (!string.IsNullOrWhiteSpace(jobPath))
 		{
-			RenderPreview(uninstallMode, argument);
+			Environment.ExitCode = RunJob(jobPath, GetArgument(args, "--result"), GetArgument(args, "--progress"));
+			return;
+		}
+		string previewPath = GetArgument(args, "--render-preview");
+		if (!string.IsNullOrWhiteSpace(previewPath))
+		{
+			RenderPreview(uninstallMode, previewPath);
 			return;
 		}
 		if (HasArgument(args, "--silent-install"))
 		{
-			using (SetupForm setupForm = new SetupForm(uninstallMode: false))
-			{
-				Environment.ExitCode = setupForm.RunSilentInstall(!HasArgument(args, "--no-desktop"), !HasArgument(args, "--no-launch"));
-				return;
-			}
+			using SetupForm form = new SetupForm(uninstallMode: false);
+			Environment.ExitCode = form.RunSilentInstall(!HasArgument(args, "--no-desktop"), !HasArgument(args, "--no-launch"));
+			return;
 		}
 		if (HasArgument(args, "--silent-uninstall"))
 		{
-			using (SetupForm setupForm2 = new SetupForm(uninstallMode: true))
-			{
-				Environment.ExitCode = setupForm2.RunSilentUninstall();
-				return;
-			}
+			using SetupForm form2 = new SetupForm(uninstallMode: true);
+			Environment.ExitCode = form2.RunSilentUninstall();
+			return;
 		}
 		Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
 		Application.ThreadException += delegate(object sender, ThreadExceptionEventArgs e)
@@ -82,47 +83,111 @@ internal static class SetupProgram
 		}
 	}
 
+	/// <summary>.NET Framework 4.8 默认不启用 TLS 1.2，Oracle 下载站与 CDN 都要求 TLS 1.2。</summary>
+	private static void ConfigureNetwork()
+	{
+		try
+		{
+			System.Net.ServicePointManager.SecurityProtocol |= System.Net.SecurityProtocolType.Tls12 | System.Net.SecurityProtocolType.Tls11;
+		}
+		catch
+		{
+		}
+		try
+		{
+			System.Net.ServicePointManager.SecurityProtocol |= (System.Net.SecurityProtocolType)12288;
+		}
+		catch
+		{
+		}
+		System.Net.ServicePointManager.Expect100Continue = false;
+	}
+
+	/// <summary>提权子进程入口：执行任务文件并回写结果，不显示界面。</summary>
+	private static int RunJob(string jobPath, string resultPath, string progressPath)
+	{
+		SetupResult result;
+		try
+		{
+			SetupJob job = SetupJob.Load(jobPath);
+			ISetupProgress progress = (string.IsNullOrWhiteSpace(progressPath) ? new DelegateProgress(delegate { }) : new FileProgress(progressPath));
+			result = SetupRunner.Run(job, progress);
+		}
+		catch (Exception ex)
+		{
+			SetupLog.Write("子进程执行失败：" + ex);
+			result = new SetupResult
+			{
+				Code = 1,
+				Title = "安装失败",
+				Message = ex.Message,
+				NeedsAttention = true
+			};
+		}
+		if (!string.IsNullOrWhiteSpace(resultPath))
+		{
+			try
+			{
+				result.Save(resultPath);
+			}
+			catch (Exception ex2)
+			{
+				SetupLog.Write("写入结果文件失败：" + ex2.Message);
+			}
+		}
+		return result.Code;
+	}
+
+	private static SetupThemeMode ParseTheme(string[] args)
+	{
+		string value = GetArgument(args, "--theme");
+		if (string.Equals(value, "dark", StringComparison.OrdinalIgnoreCase))
+		{
+			return SetupThemeMode.Dark;
+		}
+		if (string.Equals(value, "light", StringComparison.OrdinalIgnoreCase))
+		{
+			return SetupThemeMode.Light;
+		}
+		return SetupThemeMode.System;
+	}
+
 	private static void RenderPreview(bool uninstallMode, string path)
 	{
-		using SetupForm setupForm = new SetupForm(uninstallMode);
-		setupForm.StartPosition = FormStartPosition.Manual;
-		setupForm.Location = new Point(-4000, -4000);
-		setupForm.ShowInTaskbar = false;
-		setupForm.Show();
+		using SetupForm form = new SetupForm(uninstallMode);
+		form.StartPosition = FormStartPosition.Manual;
+		form.Location = new Point(-4000, -4000);
+		form.ShowInTaskbar = false;
+		form.Show();
 		Application.DoEvents();
-		Thread.Sleep(400);
+		Thread.Sleep(500);
 		Application.DoEvents();
-		setupForm.PerformLayout();
-		setupForm.Refresh();
-		int width = setupForm.Width;
-		int height = setupForm.Height;
-		if (GetWindowRect(setupForm.Handle, out var rectangle))
+		form.PerformLayout();
+		form.Refresh();
+		int width = form.Width;
+		int height = form.Height;
+		if (GetWindowRect(form.Handle, out NativeRect rectangle))
 		{
 			width = Math.Max(1, rectangle.Right - rectangle.Left);
 			height = Math.Max(1, rectangle.Bottom - rectangle.Top);
 		}
 		using Bitmap bitmap = new Bitmap(width, height);
-		bool flag = false;
 		using (Graphics graphics = Graphics.FromImage(bitmap))
 		{
 			IntPtr hdc = graphics.GetHdc();
 			try
 			{
-				flag = PrintWindow(setupForm.Handle, hdc, 2u);
+				PrintWindow(form.Handle, hdc, 2u);
 			}
 			finally
 			{
 				graphics.ReleaseHdc(hdc);
 			}
 		}
-		if (!flag)
+		string directory = Path.GetDirectoryName(Path.GetFullPath(path));
+		if (!string.IsNullOrWhiteSpace(directory))
 		{
-			setupForm.DrawToBitmap(bitmap, new Rectangle(0, 0, bitmap.Width, bitmap.Height));
-		}
-		string directoryName = Path.GetDirectoryName(Path.GetFullPath(path));
-		if (!string.IsNullOrWhiteSpace(directoryName))
-		{
-			Directory.CreateDirectory(directoryName);
+			Directory.CreateDirectory(directory);
 		}
 		bitmap.Save(path, ImageFormat.Png);
 	}
@@ -141,9 +206,9 @@ internal static class SetupProgram
 
 	private static bool HasArgument(string[] args, string name)
 	{
-		foreach (string a in args)
+		foreach (string text in args)
 		{
-			if (string.Equals(a, name, StringComparison.OrdinalIgnoreCase))
+			if (string.Equals(text, name, StringComparison.OrdinalIgnoreCase))
 			{
 				return true;
 			}

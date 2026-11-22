@@ -41,6 +41,10 @@ internal static class WorkbenchUpdateChecker
 {
 	public const string DownloadUrl = "https://dev.mysql.com/downloads/workbench/";
 
+	/// <summary>官方发布说明索引页：列出所有 Workbench 版本与发行日期，不受 GitHub 限流影响。</summary>
+	public const string ReleaseNotesUrl = "https://dev.mysql.com/doc/relnotes/workbench/en/";
+
+	/// <summary>备用来源：winget 清单（GitHub API，未登录时限流很紧，只作兜底）。</summary>
 	public const string VersionApiUrl = "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/o/Oracle/MySQLWorkbench?ref=master";
 
 	public static string GetInstalledVersion(string executablePath)
@@ -68,47 +72,101 @@ internal static class WorkbenchUpdateChecker
 
 	public static async Task<WorkbenchUpdateInfo> CheckAsync(string executablePath)
 	{
-		WorkbenchUpdateInfo workbenchUpdateInfo = new WorkbenchUpdateInfo();
-		workbenchUpdateInfo.InstalledVersion = GetInstalledVersion(executablePath);
+		WorkbenchUpdateInfo info = new WorkbenchUpdateInfo
+		{
+			InstalledVersion = GetInstalledVersion(executablePath)
+		};
+		ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+		string latest = string.Empty;
 		try
 		{
-			ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
-			HttpWebRequest httpWebRequest = (HttpWebRequest)WebRequest.Create(VersionApiUrl);
-			httpWebRequest.UserAgent = "MySQLManager/1.1";
-			httpWebRequest.Accept = "application/vnd.github+json";
-			httpWebRequest.Timeout = 8000;
-			httpWebRequest.ReadWriteTimeout = 8000;
-			httpWebRequest.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
-			using (WebResponse response = await httpWebRequest.GetResponseAsync())
-			using (Stream stream = response.GetResponseStream())
-			using (StreamReader streamReader = new StreamReader(stream, Encoding.UTF8))
-			{
-				string text = await streamReader.ReadToEndAsync();
-				Version version = null;
-				string text2 = null;
-				foreach (Match item in Regex.Matches(text, "\"name\"\\s*:\\s*\"(\\d+(?:\\.\\d+){1,3})\""))
-				{
-					Version result;
-					if (Version.TryParse(item.Groups[1].Value, out result) && (version == null || result > version))
-					{
-						version = result;
-						text2 = item.Groups[1].Value;
-					}
-				}
-				if (text2 == null)
-				{
-					workbenchUpdateInfo.ErrorMessage = "未在版本清单中找到 Workbench 版本号。";
-					return workbenchUpdateInfo;
-				}
-				workbenchUpdateInfo.LatestVersion = text2;
-				workbenchUpdateInfo.CheckSucceeded = true;
-			}
+			latest = await FetchLatestFromReleaseNotesAsync();
 		}
 		catch (Exception ex)
 		{
-			workbenchUpdateInfo.ErrorMessage = ex.Message;
-			AppLog.Error("检查 MySQL Workbench 更新失败。", ex);
+			AppLog.Error("从官方发布说明获取 Workbench 版本失败，改用备用来源。", ex);
 		}
-		return workbenchUpdateInfo;
+		if (string.IsNullOrEmpty(latest))
+		{
+			try
+			{
+				latest = await FetchLatestFromWingetAsync();
+			}
+			catch (Exception ex2)
+			{
+				AppLog.Error("从 winget 清单获取 Workbench 版本失败。", ex2);
+			}
+		}
+		if (string.IsNullOrEmpty(latest))
+		{
+			info.ErrorMessage = "暂时无法获取最新版本（网络受限或接口限流）。";
+			return info;
+		}
+		info.LatestVersion = latest;
+		info.CheckSucceeded = true;
+		return info;
+	}
+
+	/// <summary>解析官方发布说明索引页，取已发行的最高版本（跳过“Not yet released”）。</summary>
+	internal static string ParseLatestFromReleaseNotes(string html)
+	{
+		if (string.IsNullOrWhiteSpace(html))
+		{
+			return string.Empty;
+		}
+		Version best = null;
+		string bestText = null;
+		foreach (Match match in Regex.Matches(html, "Changes in MySQL Workbench\\s+(\\d+(?:\\.\\d+){1,3})\\s*\\(([^)]*)\\)"))
+		{
+			if (match.Groups[2].Value.IndexOf("Not yet released", StringComparison.OrdinalIgnoreCase) >= 0)
+			{
+				continue;
+			}
+			if (Version.TryParse(match.Groups[1].Value, out Version parsed) && (best == null || parsed > best))
+			{
+				best = parsed;
+				bestText = match.Groups[1].Value;
+			}
+		}
+		return bestText ?? string.Empty;
+	}
+
+	private static async Task<string> FetchLatestFromReleaseNotesAsync()
+	{
+		HttpWebRequest request = (HttpWebRequest)WebRequest.Create(ReleaseNotesUrl);
+		request.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MySQLManager/1.6";
+		request.Timeout = 10000;
+		request.ReadWriteTimeout = 10000;
+		request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+		using WebResponse response = await request.GetResponseAsync();
+		using Stream stream = response.GetResponseStream();
+		using StreamReader reader = new StreamReader(stream, Encoding.UTF8);
+		string html = await reader.ReadToEndAsync();
+		return ParseLatestFromReleaseNotes(html);
+	}
+
+	private static async Task<string> FetchLatestFromWingetAsync()
+	{
+		HttpWebRequest request = (HttpWebRequest)WebRequest.Create(VersionApiUrl);
+		request.UserAgent = "MySQLManager/1.6";
+		request.Accept = "application/vnd.github+json";
+		request.Timeout = 8000;
+		request.ReadWriteTimeout = 8000;
+		request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+		using WebResponse response = await request.GetResponseAsync();
+		using Stream stream = response.GetResponseStream();
+		using StreamReader reader = new StreamReader(stream, Encoding.UTF8);
+		string json = await reader.ReadToEndAsync();
+		Version best = null;
+		string bestText = null;
+		foreach (Match match in Regex.Matches(json, "\"name\"\\s*:\\s*\"(\\d+(?:\\.\\d+){1,3})\""))
+		{
+			if (Version.TryParse(match.Groups[1].Value, out Version parsed) && (best == null || parsed > best))
+			{
+				best = parsed;
+				bestText = match.Groups[1].Value;
+			}
+		}
+		return bestText ?? string.Empty;
 	}
 }
