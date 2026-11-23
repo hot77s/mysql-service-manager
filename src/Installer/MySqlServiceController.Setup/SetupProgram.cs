@@ -32,6 +32,8 @@ internal static class SetupProgram
 	{
 		bool uninstallMode = HasArgument(args, "--uninstall");
 		ConfigureNetwork();
+		// 自更新场景：主程序先启动安装程序再退出，这里等它真正退出后再覆盖文件。
+		SetupWait.WaitForExit(GetArgument(args, "--wait-for-pid"));
 		SetupTheme.SetMode(ParseTheme(args));
 		if (!string.IsNullOrWhiteSpace(GetArgument(args, "--install-dir")))
 		{

@@ -20,7 +20,7 @@ internal sealed class SetupForm : Form
 		Error
 	}
 
-	private const int WindowWidth = 720;
+	private const int WindowWidth = 520;
 
 	private readonly bool _uninstallMode;
 
@@ -186,11 +186,11 @@ internal sealed class SetupForm : Form
 	private void BuildInterface()
 	{
 		SuspendLayout();
-		_scale = (float)DeviceDpi / 96f;
+		_scale = 1f;
 		_header = new Panel
 		{
 			Dock = DockStyle.Top,
-			Height = Dp(74),
+			Height = Dp(68),
 			BackColor = SetupTheme.Background
 		};
 		base.Controls.Add(_header);
@@ -204,13 +204,13 @@ internal sealed class SetupForm : Form
 		_footer = new Panel
 		{
 			Dock = DockStyle.Bottom,
-			Height = Dp(118),
+			Height = Dp(84),
 			BackColor = SetupTheme.Background
 		};
 		base.Controls.Add(_footer);
 		_content.BringToFront();
-		_titleLabel = MakeLabel(_header, _uninstallMode ? "卸载 MySQL管家" : "安装 MySQL管家", 24, 16, 420, 34, SetupTheme.Font(17f, FontStyle.Bold), () => SetupTheme.Text);
-		_subtitleLabel = MakeLabel(_header, _uninstallMode ? "移除程序、快捷方式与配置，不影响 MySQL 服务与数据库" : ("选择安装范围与程序位置  ·  v" + SetupInfo.AppVersion), 24, 50, 480, 20, SetupTheme.Font(9f, FontStyle.Regular), () => SetupTheme.Muted);
+		_titleLabel = MakeLabel(_header, _uninstallMode ? "卸载 MySQL管家" : "安装 MySQL管家", 24, 16, 420, 34, SetupTheme.Font(16f, FontStyle.Bold), () => SetupTheme.Text);
+		_subtitleLabel = MakeLabel(_header, _uninstallMode ? "移除程序、快捷方式与配置，不影响数据库" : ("选择安装范围与程序位置  ·  v" + SetupInfo.AppVersion), 24, 36, 480, 18, SetupTheme.Font(8.6f, FontStyle.Regular), () => SetupTheme.Muted);
 		_themeButtons = new PillButton[3];
 		for (int i = 0; i < 3; i++)
 		{
@@ -230,10 +230,11 @@ internal sealed class SetupForm : Form
 			_themeActions.Add(delegate
 			{
 				bool flag = index == _themeIndex;
-				pillButton.NormalColor = (flag ? SetupTheme.Accent : SetupTheme.SurfaceAlt);
-				pillButton.HoverColor = (flag ? SetupTheme.AccentDark : SetupTheme.Mix(SetupTheme.SurfaceAlt, SetupTheme.Accent, 0.18));
-				pillButton.PressedColor = (flag ? SetupTheme.AccentDark : SetupTheme.Mix(SetupTheme.SurfaceAlt, SetupTheme.Accent, 0.28));
+				pillButton.NormalColor = (flag ? SetupTheme.Accent : SetupTheme.Surface);
+				pillButton.HoverColor = (flag ? SetupTheme.AccentDark : SetupTheme.Mix(SetupTheme.Surface, SetupTheme.Accent, 0.12));
+				pillButton.PressedColor = (flag ? SetupTheme.AccentDark : SetupTheme.Mix(SetupTheme.Surface, SetupTheme.Accent, 0.22));
 				pillButton.ForeColor = (flag ? Color.White : SetupTheme.Muted);
+				pillButton.ButtonBorderColor = (flag ? Color.Transparent : SetupTheme.Border);
 				pillButton.SurfaceColor = SetupTheme.Background;
 			});
 			_themeButtons[i] = pillButton;
@@ -247,15 +248,28 @@ internal sealed class SetupForm : Form
 		{
 			BuildInstallLayout();
 		}
+		// 标题左侧的序号徽标在紧凑版式里会挤压文字对齐，统一隐藏，改用纯文字层级。
+		if (_scopeBadge != null)
+		{
+			_scopeBadge.Visible = false;
+		}
+		if (_pathBadge != null)
+		{
+			_pathBadge.Visible = false;
+		}
+		if (_summaryBadge != null)
+		{
+			_summaryBadge.Visible = false;
+		}
 		_bannerCard = new CardPanel
 		{
 			Radius = Dp(12),
 			FillColor = SetupTheme.AccentSoft
 		};
 		_footer.Controls.Add(_bannerCard);
-		_bannerIcon = MakeLabel(_bannerCard, "i", 14, 12, 18, 20, SetupTheme.Font(10f, FontStyle.Bold), () => SetupTheme.Accent);
+		_bannerIcon = MakeLabel(_bannerCard, "i", 12, 9, 16, 20, SetupTheme.Font(9.6f, FontStyle.Bold), () => SetupTheme.Accent);
 		_bannerIcon.TextAlign = ContentAlignment.MiddleCenter;
-		_bannerText = MakeLabel(_bannerCard, string.Empty, 38, 8, 400, 32, SetupTheme.Font(8.6f, FontStyle.Regular), () => SetupTheme.Text);
+		_bannerText = MakeLabel(_bannerCard, string.Empty, 34, 2, 400, 34, SetupTheme.Font(8.2f, FontStyle.Regular), () => SetupTheme.Text);
 		_bannerText.AutoSize = false;
 		_bannerText.TextAlign = ContentAlignment.MiddleLeft;
 		_progressLine = new ProgressLine
@@ -263,11 +277,11 @@ internal sealed class SetupForm : Form
 			Visible = false
 		};
 		_footer.Controls.Add(_progressLine);
-		_authorLabel = MakeLabel(_footer, "作者  77's  ·  v" + SetupInfo.AppVersion, 24, 0, 260, 20, SetupTheme.Font(8.4f, FontStyle.Regular), () => SetupTheme.Muted);
+		_authorLabel = MakeLabel(_footer, "作者  77's  ·  v" + SetupInfo.AppVersion, 24, 52, 200, 20, SetupTheme.Font(8.2f, FontStyle.Regular), () => SetupTheme.Muted);
 		_cancelButton = new PillButton
 		{
 			Text = "取消",
-			Font = SetupTheme.Font(9.2f, FontStyle.Bold),
+			Font = SetupTheme.Font(8.6f, FontStyle.Bold),
 			Radius = 10f
 		};
 		_cancelButton.Click += delegate
@@ -279,11 +293,13 @@ internal sealed class SetupForm : Form
 		};
 		_themeActions.Add(delegate
 		{
-			_cancelButton.NormalColor = SetupTheme.NeutralSoft;
-			_cancelButton.HoverColor = SetupTheme.Mix(SetupTheme.NeutralSoft, SetupTheme.Text, 0.06);
-			_cancelButton.PressedColor = SetupTheme.Mix(SetupTheme.NeutralSoft, SetupTheme.Text, 0.12);
+			// 次要按钮用「白底 + 细描边」：NeutralSoft 在浅色主题下与背景同色，会把按钮画没。
+			_cancelButton.NormalColor = SetupTheme.Surface;
+			_cancelButton.HoverColor = SetupTheme.Mix(SetupTheme.Surface, SetupTheme.Text, 0.06);
+			_cancelButton.PressedColor = SetupTheme.Mix(SetupTheme.Surface, SetupTheme.Text, 0.12);
 			_cancelButton.ForeColor = SetupTheme.Text;
-			_cancelButton.DisabledColor = SetupTheme.NeutralSoft;
+			_cancelButton.ButtonBorderColor = SetupTheme.Border;
+			_cancelButton.DisabledColor = SetupTheme.Surface;
 			_cancelButton.DisabledTextColor = SetupTheme.Subtle;
 			_cancelButton.SurfaceColor = SetupTheme.Background;
 		});
@@ -291,7 +307,7 @@ internal sealed class SetupForm : Form
 		_primaryButton = new PillButton
 		{
 			Text = (_uninstallMode ? "卸载" : "开始安装"),
-			Font = SetupTheme.Font(9.4f, FontStyle.Bold),
+			Font = SetupTheme.Font(8.8f, FontStyle.Bold),
 			Radius = 10f
 		};
 		_primaryButton.Click += PrimaryButton_Click;
@@ -325,9 +341,9 @@ internal sealed class SetupForm : Form
 		});
 		_scopeBadge = new NumberBadge(1, Dp(22));
 		_scopeCard.Controls.Add(_scopeBadge);
-		_scopeTitle = MakeLabel(_scopeCard, "安装范围", 0, 0, 200, 24, SetupTheme.Font(10.2f, FontStyle.Bold), () => SetupTheme.Text);
+		_scopeTitle = MakeLabel(_scopeCard, "安装范围", 0, 0, 200, 24, SetupTheme.Font(9.8f, FontStyle.Bold), () => SetupTheme.Text);
 		_scopeTitle.TextAlign = ContentAlignment.MiddleLeft;
-		_scopeHint = MakeLabel(_scopeCard, "需要管理员授权", 0, 0, 260, 20, SetupTheme.Font(8.4f, FontStyle.Regular), () => SetupTheme.Subtle);
+		_scopeHint = MakeLabel(_scopeCard, "需要管理员授权", 0, 0, 260, 18, SetupTheme.Font(8.2f, FontStyle.Regular), () => SetupTheme.Subtle);
 		_scopeHint.TextAlign = ContentAlignment.MiddleRight;
 		_scopeSegment = new SegmentedControl
 		{
@@ -349,8 +365,8 @@ internal sealed class SetupForm : Form
 		});
 		_pathBadge = new NumberBadge(2, Dp(22));
 		_pathCard.Controls.Add(_pathBadge);
-		_pathTitle = MakeLabel(_pathCard, "程序安装位置", 0, 0, 240, 24, SetupTheme.Font(10.2f, FontStyle.Bold), () => SetupTheme.Text);
-		_pathHint = MakeLabel(_pathCard, "文件夹名称：" + SetupInfo.FolderName, 0, 0, 260, 20, SetupTheme.Font(8.4f, FontStyle.Regular), () => SetupTheme.Subtle);
+		_pathTitle = MakeLabel(_pathCard, "程序安装位置", 0, 0, 240, 24, SetupTheme.Font(9.8f, FontStyle.Bold), () => SetupTheme.Text);
+		_pathHint = MakeLabel(_pathCard, "文件夹名称：" + SetupInfo.FolderName, 0, 0, 260, 18, SetupTheme.Font(8.2f, FontStyle.Regular), () => SetupTheme.Subtle);
 		_pathHint.TextAlign = ContentAlignment.MiddleRight;
 		_pathHint.TextAlign = ContentAlignment.MiddleRight;
 		_appPathField = new PathField();
@@ -422,8 +438,8 @@ internal sealed class SetupForm : Form
 		});
 		_pathBadge = new NumberBadge(1, Dp(22));
 		_pathCard.Controls.Add(_pathBadge);
-		_pathTitle = MakeLabel(_pathCard, "安装范围与位置", 0, 0, 240, 24, SetupTheme.Font(10.2f, FontStyle.Bold), () => SetupTheme.Text);
-		_pathHint = MakeLabel(_pathCard, string.Empty, 0, 0, 300, 20, SetupTheme.Font(8.4f, FontStyle.Regular), () => SetupTheme.Subtle);
+		_pathTitle = MakeLabel(_pathCard, "安装范围与位置", 0, 0, 240, 24, SetupTheme.Font(9.8f, FontStyle.Bold), () => SetupTheme.Text);
+		_pathHint = MakeLabel(_pathCard, string.Empty, 0, 0, 300, 18, SetupTheme.Font(8.2f, FontStyle.Regular), () => SetupTheme.Subtle);
 		_pathHint.TextAlign = ContentAlignment.MiddleRight;
 		_appPathField = new PathField
 		{
@@ -445,9 +461,9 @@ internal sealed class SetupForm : Form
 		_summaryBadge = new NumberBadge(2, Dp(22));
 		_summaryCard.Controls.Add(_summaryBadge);
 		_summaryTitle = MakeLabel(_summaryCard, "卸载内容", 0, 0, 200, 24, SetupTheme.Font(10.2f, FontStyle.Bold), () => SetupTheme.Text);
-		_summaryHint = MakeLabel(_summaryCard, string.Empty, 0, 0, 240, 20, SetupTheme.Font(8.4f, FontStyle.Regular), () => SetupTheme.Subtle);
+		_summaryHint = MakeLabel(_summaryCard, string.Empty, 0, 0, 240, 18, SetupTheme.Font(8.2f, FontStyle.Regular), () => SetupTheme.Subtle);
 		_summaryHint.TextAlign = ContentAlignment.MiddleRight;
-		_uninstallSummaryLabel = MakeLabel(_summaryCard, "会移除：程序文件、开始菜单与桌面快捷方式、程序配置与日志。\n不会移除：MySQL 服务、数据库文件、已安装的 MySQL 服务端与 Workbench。", 0, 0, 500, 50, SetupTheme.Font(8.8f, FontStyle.Regular), () => SetupTheme.Muted);
+		_uninstallSummaryLabel = MakeLabel(_summaryCard, "会移除：程序文件、开始菜单与桌面快捷方式、程序配置与日志。\n不会移除：MySQL 服务、数据库文件、MySQL 组件与 Workbench。", 0, 0, 500, 50, SetupTheme.Font(8.8f, FontStyle.Regular), () => SetupTheme.Muted);
 	}
 
 	private void RegisterNeutralButton(PillButton button)
@@ -536,7 +552,7 @@ internal sealed class SetupForm : Form
 		{
 			return "卸载只清理本程序的文件与配置，MySQL 服务和数据库文件保持不变。";
 		}
-		return "安装程序约 2 MB；MySQL 服务与 Workbench 可在主界面「安装组件」中安装。";
+		return "安装程序约 2 MB  ·  MySQL 组件可在主界面「安装组件」中添加";
 	}
 
 	private void SetupForm_FormClosing(object sender, FormClosingEventArgs e)
@@ -1119,13 +1135,37 @@ internal sealed class SetupForm : Form
 	{
 		base.OnHandleCreated(e);
 		SetupNative.ApplyTitleBar(base.Handle, SetupTheme.IsDark, SetupTheme.Background, SetupTheme.Text);
+		ApplyDpiScale();
+	}
+
+	protected override void OnLoad(EventArgs e)
+	{
+		base.OnLoad(e);
+		ApplyDpiScale();
 	}
 
 	protected override void OnDpiChanged(DpiChangedEventArgs e)
 	{
 		base.OnDpiChanged(e);
-		_scale = (float)e.DeviceDpiNew / 96f;
+		ApplyDpiScale();
 		RecenterAfterDpi();
+	}
+
+	/// <summary>按窗口真实 DPI 重算比例、重排并重新定尺寸，避免文字比控件大导致重叠。</summary>
+	private void ApplyDpiScale()
+	{
+		if (_header == null || _content == null || _footer == null || !base.IsHandleCreated)
+		{
+			return;
+		}
+		float scale = SetupNative.GetScale(base.Handle);
+		if (Math.Abs(scale - _scale) < 0.01f)
+		{
+			return;
+		}
+		_scale = scale;
+		PrepareWindow();
+		Invalidate(true);
 	}
 
 	private void RecenterAfterDpi()
@@ -1152,78 +1192,78 @@ internal sealed class SetupForm : Form
 		{
 			return;
 		}
-		int width = Math.Max(Dp(WindowWidth), Math.Max(Dp(620), base.ClientSize.Width));
+		int width = Math.Max(Dp(WindowWidth), base.ClientSize.Width);
 		int contentWidth = width - Dp(48);
 		int right = contentWidth;
-		_header.SetBounds(0, 0, width, Dp(74));
-		_titleLabel.SetBounds(Dp(24), Dp(16), Dp(420), Dp(34));
-		_subtitleLabel.SetBounds(Dp(24), Dp(50), Math.Max(Dp(240), right - Dp(260)), Dp(20));
-		int themeWidth = Dp(56);
+		int pad = Dp(20);
+		_header.SetBounds(0, 0, width, Dp(68));
+		_titleLabel.SetBounds(Dp(24), Dp(10), Math.Max(Dp(200), width - Dp(24) - Dp(196)), Dp(28));
+		_subtitleLabel.SetBounds(Dp(24), Dp(40), Math.Max(Dp(240), right - Dp(192)), Dp(18));
+		int themeWidth = Dp(46);
 		int themeGap = Dp(6);
 		int themeRight = width - Dp(24);
 		for (int i = 2; i >= 0; i--)
 		{
-			_themeButtons[i].SetBounds(themeRight - themeWidth, Dp(20), themeWidth, Dp(26));
+			_themeButtons[i].SetBounds(themeRight - themeWidth, Dp(15), themeWidth, Dp(22));
 			themeRight -= themeWidth + themeGap;
 		}
 		if (!_uninstallMode)
 		{
-			int y = Dp(6);
-			LayoutCard(_scopeCard, y, Dp(88), contentWidth);
-			_scopeBadge.SetBounds(Dp(20), Dp(16), Dp(22), Dp(22));
-			_scopeTitle.SetBounds(Dp(52), Dp(14), Dp(200), Dp(24));
-			_scopeHint.SetBounds(right - Dp(220), Dp(16), Dp(200), Dp(20));
-			_scopeSegment.SetBounds(Dp(52), Dp(46), Dp(272), Dp(32));
-			y += Dp(88) + Dp(12);
-			LayoutCard(_pathCard, y, Dp(102), contentWidth);
-			_pathBadge.SetBounds(Dp(20), Dp(16), Dp(22), Dp(22));
-			_pathTitle.SetBounds(Dp(52), Dp(14), Dp(240), Dp(24));
-			_pathHint.SetBounds(right - Dp(300), Dp(16), Dp(280), Dp(20));
-			_appPathField.SetBounds(Dp(52), Dp(44), right - Dp(52) - Dp(88) - Dp(10), Dp(32));
-			_appBrowseButton.SetBounds(right - Dp(88), Dp(44), Dp(88), Dp(32));
-			_appRestoreLink.Location = new Point(Dp(52), Dp(80));
-			y += Dp(102) + Dp(12);
-			y += Dp(14);
-			_desktopCheck.SetBounds(Dp(24), y, Dp(200), Dp(22));
-			_launchCheck.SetBounds(Dp(240), y, Dp(220), Dp(22));
-			_content.AutoScrollMinSize = new Size(0, y + Dp(30));
+			int y = Dp(8);
+			LayoutCard(_scopeCard, y, Dp(80), contentWidth);
+			_scopeTitle.SetBounds(pad, Dp(14), Dp(200), Dp(22));
+			_scopeHint.SetBounds(right - pad - Dp(160), Dp(14), Dp(160), Dp(18));
+			_scopeSegment.SetBounds(pad, Dp(40), right - pad * 2, Dp(32));
+			y += Dp(80) + Dp(10);
+			LayoutCard(_pathCard, y, Dp(100), contentWidth);
+			_pathTitle.SetBounds(pad, Dp(14), Dp(150), Dp(22));
+			_pathHint.SetBounds(right - pad - Dp(224), Dp(14), Dp(224), Dp(18));
+			_appPathField.SetBounds(pad, Dp(40), right - pad * 2 - Dp(84) - Dp(8), Dp(32));
+			_appBrowseButton.SetBounds(right - pad - Dp(84), Dp(40), Dp(84), Dp(32));
+			// 链接与输入框左边缘对齐，读起来是「这一项的附加操作」。
+			_appRestoreLink.Location = new Point(pad, Dp(76));
+			y += Dp(100) + Dp(12);
+			int half = (contentWidth - Dp(12)) / 2;
+			_desktopCheck.SetBounds(Dp(24), y, half, Dp(22));
+			_launchCheck.SetBounds(Dp(24) + half + Dp(12), y, half, Dp(22));
+			_content.AutoScrollMinSize = new Size(0, y + Dp(16));
 		}
 		else
 		{
-			int y2 = Dp(6);
-			LayoutCard(_pathCard, y2, Dp(132), contentWidth);
-			_pathBadge.SetBounds(Dp(20), Dp(16), Dp(22), Dp(22));
-			_pathTitle.SetBounds(Dp(52), Dp(14), Dp(240), Dp(24));
-			_pathHint.SetBounds(right - Dp(300), Dp(16), Dp(280), Dp(20));
-			_appPathField.SetBounds(Dp(52), Dp(44), right - Dp(52) - Dp(20), Dp(32));
+			int y2 = Dp(8);
+			LayoutCard(_pathCard, y2, Dp(100), contentWidth);
+			_pathTitle.SetBounds(pad, Dp(14), Dp(150), Dp(22));
+			_pathHint.SetBounds(right - pad - Dp(224), Dp(14), Dp(224), Dp(18));
+			_appPathField.SetBounds(pad, Dp(40), right - pad * 2, Dp(32));
 			foreach (Control control in _pathCard.Controls)
 			{
 				if (control.Name == "ScopeLabel")
 				{
-					control.SetBounds(Dp(52), Dp(84), right - Dp(72), Dp(20));
+					control.SetBounds(pad, Dp(78), right - pad * 2, Dp(18));
 				}
 			}
-			y2 += Dp(132) + Dp(12);
-			LayoutCard(_summaryCard, y2, Dp(118), contentWidth);
-			_summaryBadge.SetBounds(Dp(20), Dp(16), Dp(22), Dp(22));
-			_summaryTitle.SetBounds(Dp(52), Dp(14), Dp(200), Dp(24));
-			_summaryHint.SetBounds(right - Dp(320), Dp(16), Dp(300), Dp(20));
+			y2 += Dp(100) + Dp(10);
+			LayoutCard(_summaryCard, y2, Dp(86), contentWidth);
+			_summaryTitle.SetBounds(pad, Dp(14), Dp(200), Dp(22));
+			_summaryHint.SetBounds(right - pad - Dp(160), Dp(14), Dp(160), Dp(18));
 			_summaryHint.Text = "卸载不会影响数据库";
-			_uninstallSummaryLabel?.SetBounds(Dp(52), Dp(44), right - Dp(72), Dp(52));
+			_uninstallSummaryLabel?.SetBounds(pad, Dp(40), right - pad * 2, Dp(42));
 			_summaryHint.Visible = true;
-			_content.AutoScrollMinSize = new Size(0, y2 + Dp(118) + Dp(30));
+			_content.AutoScrollMinSize = new Size(0, y2 + Dp(86) + Dp(16));
 		}
-		int footerTop = base.ClientSize.Height - _footer.Height;
-		_footer.SetBounds(0, footerTop, width, _footer.Height);
-		int footerWidth = width;
-		_bannerCard.SetBounds(Dp(24), Dp(12), footerWidth - Dp(48), Dp(46));
-		_bannerIcon.SetBounds(Dp(14), Dp(13), Dp(18), Dp(20));
-		_bannerText.SetBounds(Dp(38), Dp(4), footerWidth - Dp(48) - Dp(60), Dp(34));
-		_progressLine.SetBounds(Dp(38), _bannerCard.Bottom - Dp(7), footerWidth - Dp(48) - Dp(60), Dp(3));
-		int buttonTop = Dp(66);
-		_primaryButton.SetBounds(footerWidth - Dp(24) - Dp(128), buttonTop, Dp(128), Dp(40));
-		_cancelButton.SetBounds(_primaryButton.Left - Dp(12) - Dp(100), buttonTop, Dp(100), Dp(40));
-		_authorLabel.SetBounds(Dp(24), buttonTop + Dp(10), Dp(300), Dp(20));
+		// 底栏：提示条、作者行、按钮共用 24 边距；作者行与按钮垂直居中。
+		int footerHeight = Dp(88);
+		int footerTop = base.ClientSize.Height - footerHeight;
+		_footer.SetBounds(0, footerTop, width, footerHeight);
+		_bannerCard.SetBounds(Dp(24), Dp(8), width - Dp(48), Dp(34));
+		_bannerIcon.SetBounds(Dp(12), Dp(7), Dp(16), Dp(18));
+		_bannerText.SetBounds(Dp(32), Dp(0), width - Dp(48) - Dp(54), Dp(32));
+		_progressLine.SetBounds(Dp(32), _bannerCard.Bottom - Dp(4), width - Dp(48) - Dp(54), Dp(3));
+		int buttonHeight = Dp(32);
+		int buttonTop = Dp(48);
+		_primaryButton.SetBounds(width - Dp(24) - Dp(108), buttonTop, Dp(108), buttonHeight);
+		_cancelButton.SetBounds(_primaryButton.Left - Dp(8) - Dp(78), buttonTop, Dp(78), buttonHeight);
+		_authorLabel.SetBounds(Dp(24), buttonTop + Dp(6), Dp(200), Dp(20));
 	}
 
 	private void LayoutCard(CardPanel card, int top, int height, int contentWidth)
@@ -1243,8 +1283,8 @@ internal sealed class SetupForm : Form
 
 	private Size ComputeWindowSize()
 	{
-		int contentHeight = _uninstallMode ? Dp(6 + 132 + 12 + 118 + 30) : Dp(6 + 88 + 12 + 102 + 14 + 22 + 30);
-		int height = Dp(74) + contentHeight + Dp(118);
+		int contentHeight = _uninstallMode ? Dp(8 + 100 + 10 + 86 + 16) : Dp(8 + 80 + 10 + 100 + 12 + 22 + 16);
+		int height = Dp(68) + contentHeight + Dp(88);
 		return new Size(Dp(WindowWidth), height);
 	}
 
@@ -1336,6 +1376,10 @@ internal sealed class SetupForm : Form
 		SetupResult result = SetupRunner.Run(job, new DelegateProgress(delegate
 		{
 		}));
+		if (result.Code == 0 && launchApplication)
+		{
+			LaunchInstalledApplication();
+		}
 		return result.Code;
 	}
 

@@ -27,7 +27,7 @@ internal static class SetupInfo
 
 	public const string FolderName = "MySQL Manager";
 
-	public const string AppVersion = "1.6.0";
+	public const string AppVersion = "1.6.1";
 
 	public const string Publisher = "77's";
 

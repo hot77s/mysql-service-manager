@@ -33,6 +33,8 @@ internal static class ConfigStore
 			appConfig.ThemeMode = (string.IsNullOrWhiteSpace(appConfig2.ThemeMode) ? "system" : appConfig2.ThemeMode.Trim());
 			appConfig.WorkbenchLatestVersion = (appConfig2.WorkbenchLatestVersion ?? string.Empty).Trim();
 			appConfig.WorkbenchCheckedUtc = (appConfig2.WorkbenchCheckedUtc ?? string.Empty).Trim();
+			appConfig.AppLatestVersion = (appConfig2.AppLatestVersion ?? string.Empty).Trim();
+			appConfig.AppCheckedUtc = (appConfig2.AppCheckedUtc ?? string.Empty).Trim();
 			if (appConfig.RefreshSeconds < 1 || appConfig.RefreshSeconds > 60)
 			{
 				appConfig.RefreshSeconds = 2;

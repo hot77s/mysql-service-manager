@@ -36,6 +36,9 @@ internal static class SetupNative
 	private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 
 	[DllImport("user32.dll")]
+	private static extern uint GetDpiForWindow(IntPtr hwnd);
+
+	[DllImport("user32.dll")]
 	private static extern bool ReleaseCapture();
 
 	[DllImport("user32.dll")]
@@ -71,6 +74,27 @@ internal static class SetupNative
 		catch
 		{
 		}
+	}
+
+	/// <summary>窗口真实 DPI 比例（100% = 1）：.NET Framework 的 DeviceDpi 在 150% 缩放下可能仍是 96。</summary>
+	public static float GetScale(IntPtr handle)
+	{
+		try
+		{
+			if (handle == IntPtr.Zero)
+			{
+				return 1f;
+			}
+			uint dpi = GetDpiForWindow(handle);
+			if (dpi >= 48 && dpi <= 480)
+			{
+				return dpi / 96f;
+			}
+		}
+		catch
+		{
+		}
+		return 1f;
 	}
 
 	public static void BeginDrag(IntPtr handle)

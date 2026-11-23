@@ -26,6 +26,14 @@ internal sealed class AppConfig
 	[DataMember(Order = 7)]
 	public string WorkbenchCheckedUtc { get; set; }
 
+	/// <summary>最近一次自更新检查得到的 MySQL管家 最新版本。</summary>
+	[DataMember(Order = 8)]
+	public string AppLatestVersion { get; set; }
+
+	/// <summary>最近一次自更新检查时间（UTC，往返格式）。</summary>
+	[DataMember(Order = 9)]
+	public string AppCheckedUtc { get; set; }
+
 	public AppConfig()
 	{
 		ServiceName = string.Empty;
@@ -35,5 +43,7 @@ internal sealed class AppConfig
 		ThemeMode = "system";
 		WorkbenchLatestVersion = string.Empty;
 		WorkbenchCheckedUtc = string.Empty;
+		AppLatestVersion = string.Empty;
+		AppCheckedUtc = string.Empty;
 	}
 }

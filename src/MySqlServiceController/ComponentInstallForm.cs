@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -111,7 +112,7 @@ internal sealed class ComponentInstallForm : Form
 		base.StartPosition = FormStartPosition.CenterParent;
 		base.FormBorderStyle = FormBorderStyle.FixedDialog;
 		base.MaximizeBox = false;
-		base.MinimizeBox = false;
+		base.MinimizeBox = true;
 		base.ShowInTaskbar = false;
 		base.BackColor = Theme.Background;
 		base.Font = Theme.Font(9.5f, FontStyle.Regular);
@@ -124,7 +125,7 @@ internal sealed class ComponentInstallForm : Form
 		catch
 		{
 		}
-		_scale = (float)DeviceDpi / 96f;
+		_scale = 1f;
 		_serverOptions.AddRange(ComponentCatalog.GetOptions(ComponentCatalog.KindServer));
 		_workbenchOptions.AddRange(ComponentCatalog.GetOptions(ComponentCatalog.KindWorkbench));
 		BuildInterface();
@@ -224,6 +225,7 @@ internal sealed class ComponentInstallForm : Form
 		};
 		_serverCard.Controls.Add(_serverServiceCheck);
 		_serverState = MakeLabel(string.Empty, 40, 0, 320, 20, Theme.Font(8.4f, FontStyle.Regular), Theme.Subtle);
+		_serverState.AutoEllipsis = true;
 		_serverCard.Controls.Add(_serverState);
 
 		// ---- Workbench ----
@@ -289,6 +291,7 @@ internal sealed class ComponentInstallForm : Form
 		};
 		_workbenchCard.Controls.Add(_workbenchBrowse);
 		_workbenchState = MakeLabel(string.Empty, 40, 0, 320, 20, Theme.Font(8.4f, FontStyle.Regular), Theme.Subtle);
+		_workbenchState.AutoEllipsis = true;
 		_workbenchCard.Controls.Add(_workbenchState);
 
 		// ---- 底部状态与按钮 ----
@@ -304,6 +307,7 @@ internal sealed class ComponentInstallForm : Form
 		_statusCard.Controls.Add(_statusIcon);
 		_statusText = MakeLabel(string.Empty, 42, 0, 520, 24, Theme.Font(8.8f, FontStyle.Regular), Theme.Text);
 		_statusText.TextAlign = ContentAlignment.MiddleLeft;
+		_statusText.AutoEllipsis = true;
 		_statusCard.Controls.Add(_statusText);
 		_progressLine = new ProgressLine
 		{
@@ -333,6 +337,7 @@ internal sealed class ComponentInstallForm : Form
 		_installButton.Click += InstallButton_Click;
 		base.Controls.Add(_installButton);
 		_authorLabel = MakeLabel("下载源：cdn.mysql.com  ·  需要管理员授权", 24, 0, 360, 20, Theme.Font(8.2f, FontStyle.Regular), Theme.Subtle);
+		_authorLabel.AutoEllipsis = true;
 		base.Controls.Add(_authorLabel);
 		base.AcceptButton = _installButton;
 		base.CancelButton = _closeButton;
@@ -352,6 +357,103 @@ internal sealed class ComponentInstallForm : Form
 			AutoSize = false
 		};
 		return label;
+	}
+
+	[DllImport("user32.dll")]
+	private static extern uint GetDpiForWindow(IntPtr hwnd);
+
+	[DllImport("dwmapi.dll")]
+	private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+	/// <summary>窗口真实 DPI：DeviceDpi 在高分屏（如 150%）下可能仍返回 96，只能问系统。</summary>
+	private float CurrentScale()
+	{
+		try
+		{
+			if (base.IsHandleCreated)
+			{
+				uint dpi = GetDpiForWindow(base.Handle);
+				if (dpi >= 48 && dpi <= 480)
+				{
+					return dpi / 96f;
+				}
+			}
+		}
+		catch
+		{
+		}
+		return _scale;
+	}
+
+	/// <summary>标题栏跟随主题，与主界面一致：深色模式下标题栏也是黑的。</summary>
+	private void ApplyTitleBarTheme()
+	{
+		if (!base.IsHandleCreated)
+		{
+			return;
+		}
+		int dark = (Theme.IsDark ? 1 : 0);
+		try
+		{
+			DwmSetWindowAttribute(base.Handle, 20, ref dark, 4);
+		}
+		catch
+		{
+		}
+		int caption = ColorTranslator.ToWin32(Theme.IsDark ? Theme.Background : Color.White);
+		int text = ColorTranslator.ToWin32(Theme.Text);
+		try
+		{
+			DwmSetWindowAttribute(base.Handle, 35, ref caption, 4);
+		}
+		catch
+		{
+		}
+		try
+		{
+			DwmSetWindowAttribute(base.Handle, 36, ref text, 4);
+		}
+		catch
+		{
+		}
+	}
+
+	/// <summary>按窗口真实 DPI 重算一次比例并重排，避免文字比控件大导致重叠。</summary>
+	/// <summary>模态窗口自己最小化后主窗口仍被禁用，会把用户卡住；这里改成连同主窗口一起最小化。</summary>
+	protected override void WndProc(ref Message m)
+	{
+		if (m.Msg == 0x0112 && (m.WParam.ToInt32() & 0xFFF0) == 0xF020 && base.Owner != null)
+		{
+			base.Owner.WindowState = FormWindowState.Minimized;
+			return;
+		}
+		base.WndProc(ref m);
+	}
+
+	private void ApplyScaleFromWindow()
+	{
+		float scale = CurrentScale();
+		if (Math.Abs(scale - _scale) < 0.01f)
+		{
+			return;
+		}
+		_scale = scale;
+		LayoutContent();
+		Invalidate(true);
+	}
+
+	protected override void OnHandleCreated(EventArgs e)
+	{
+		base.OnHandleCreated(e);
+		ApplyScaleFromWindow();
+		ApplyTitleBarTheme();
+	}
+
+	protected override void OnLoad(EventArgs e)
+	{
+		base.OnLoad(e);
+		ApplyScaleFromWindow();
+		ApplyTitleBarTheme();
 	}
 
 	private void LayoutContent()
@@ -964,8 +1066,8 @@ internal sealed class ComponentInstallForm : Form
 	protected override void OnDpiChanged(DpiChangedEventArgs e)
 	{
 		base.OnDpiChanged(e);
-		_scale = (float)e.DeviceDpiNew / 96f;
-		LayoutContent();
+		ApplyScaleFromWindow();
+		ApplyTitleBarTheme();
 	}
 
 	protected override void OnFormClosing(FormClosingEventArgs e)
