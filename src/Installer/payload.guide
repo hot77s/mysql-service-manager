@@ -1,4 +1,4 @@
-MySQL管家 1.6.1
+MySQL管家 1.6.2
 ==================
 
 作者：77's
@@ -76,14 +76,14 @@ MySQL管家是一个轻量的 Windows 桌面程序，用于一键启动或停止
    找到，会引导手动选择并自动记住。也可以直接编辑 config.json 的
    WorkbenchPath 字段。
 7. 配置文件位于：
-   %LOCALAPPDATA%\MySQLServiceController\config.json
+   %LOCALAPPDATA%\MySQLManager\config.json
    1.0.6 新增可选字段 WorkbenchPath；1.1.0 新增 ThemeMode（system/light/dark）
    与 Workbench 更新检查缓存字段。旧版配置可直接使用，缺少 ThemeMode 时
    按“跟随系统”处理。
-   数据目录沿用 MySQLServiceController 这一路径，是为了覆盖升级时保留原有
+   1.6.2 起数据目录改名为 MySQLManager（旧目录会自动迁移，见第七章）；
    配置与日志，与新的显示名称不冲突。
 8. 日志位于：
-   %LOCALAPPDATA%\MySQLServiceController\logs\app.log
+   %LOCALAPPDATA%\MySQLManager\logs\app.log
 
 六、安装 MySQL 服务与 Workbench（在软件主界面）
 
@@ -145,6 +145,24 @@ MySQL管家是一个轻量的 Windows 桌面程序，用于一键启动或停止
    已安装版本与安装路径，方便确认装到了哪里。
 
 七、版本改进
+
+1.6.2 改进
+
+一、配置文件夹改名
+
+1. 配置与日志目录从 %LOCALAPPDATA%\MySQLServiceController 改名为
+   %LOCALAPPDATA%\MySQLManager，右下角“打开配置文件夹”看到的不再是老名字。
+2. 从 1.6.1 或更早版本升级时，程序启动会把旧目录里的 config.json 与日志
+   自动复制到新目录，服务名、主题等设置原样保留，不需要重新配置。
+3. 旧目录不会自动删除；卸载 1.6.2 时新旧两个目录都会清理。
+
+二、MySQL 组件下载提速
+
+1. 修复安装 MySQL Server 与 MySQL Workbench 时下载慢的问题：程序原来只
+   从官方归档站（downloads.mysql.com/archives，实测约 30 KB/s）下载，
+   现在改为官方 CDN（cdn.mysql.com，实测约 300 KB/s）优先，归档站只在
+   下载旧版本时兜底。
+2. 下载缓冲区从 80 KB 加大到 256 KB，长连接大文件更流畅。
 
 1.6.1 改进
 
@@ -410,11 +428,11 @@ MySQL管家是一个轻量的 Windows 桌面程序，用于一键启动或停止
 
 11. 程序日志
     如果界面提示不够明确，请查看：
-    %LOCALAPPDATA%\MySQLServiceController\logs\app.log
+    %LOCALAPPDATA%\MySQLManager\logs\app.log
 
 九、安装与卸载
 
-1. 双击 MySQL-Manager-1.6.1-Setup.exe 启动安装程序。界面与主程序同一套风格：
+1. 双击 MySQL-Manager-1.6.2-Setup.exe 启动安装程序。界面与主程序同一套风格：
    圆角卡片、胶囊按钮、浅灰/深色底，右上角可以在“系统 / 浅色 / 深色”之间
    切换主题，默认跟随 Windows。
 

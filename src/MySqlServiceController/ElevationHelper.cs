@@ -43,7 +43,7 @@ internal static class ElevationHelper
 
 	public static ServiceActionResult RunElevatedAction(string action, string serviceName)
 	{
-		string text = Path.Combine(Path.GetTempPath(), "MySQLServiceController-" + Guid.NewGuid().ToString("N") + ".result");
+		string text = Path.Combine(Path.GetTempPath(), "MySQLManager-" + Guid.NewGuid().ToString("N") + ".result");
 		try
 		{
 			string arguments = "--elevated-action " + QuoteArgument(action) + " --service " + QuoteArgument(serviceName) + " --result " + QuoteArgument(text);

@@ -11,6 +11,8 @@ internal static class Program
 	[STAThread]
 	private static void Main(string[] args)
 	{
+		// 1.6.2 起：把旧目录 MySQLServiceController 的配置与日志迁到 MySQLManager，必须在任何读写之前。
+		AppLog.MigrateLegacyDataDirectory();
 		AppLog.Info("程序入口已启动。版本 " + Application.ProductVersion);
 		if (ElevationHelper.TryHandleElevatedAction(args))
 		{

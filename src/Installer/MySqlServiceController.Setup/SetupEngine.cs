@@ -27,7 +27,7 @@ internal static class SetupInfo
 
 	public const string FolderName = "MySQL Manager";
 
-	public const string AppVersion = "1.6.1";
+	public const string AppVersion = "1.6.2";
 
 	public const string Publisher = "77's";
 
@@ -37,7 +37,11 @@ internal static class SetupInfo
 
 	public const string LegacyUninstallKeyPath = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\MySQLServiceController";
 
-	public const string DataFolderName = "MySQLServiceController";
+	/// <summary>1.6.2 起的用户数据目录名。</summary>
+	public const string DataFolderName = "MySQLManager";
+
+	/// <summary>1.6.1 及之前的用户数据目录名，卸载时一并清理。</summary>
+	public const string LegacyDataFolderName = "MySQLServiceController";
 
 	public const string ShortcutName = "MySQL管家.lnk";
 
@@ -609,14 +613,19 @@ internal static class SetupInstaller
 		script.Append("if (-not (Get-ChildItem -LiteralPath $installDir -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $installDir -Force -ErrorAction SilentlyContinue; }; ");
 		string dataDirectory = Path.GetFullPath(SetupInfo.UserDataDirectory);
 		string localAppData = Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)) + Path.DirectorySeparatorChar;
-		if (string.Equals(Path.GetFileName(dataDirectory), SetupInfo.DataFolderName, StringComparison.OrdinalIgnoreCase) && (testMode || dataDirectory.StartsWith(localAppData, StringComparison.OrdinalIgnoreCase)))
+		if (testMode || dataDirectory.StartsWith(localAppData, StringComparison.OrdinalIgnoreCase))
 		{
-			script.Append("$dataDir = ");
-			script.Append(ToPowerShellLiteral(dataDirectory));
-			script.Append("; if (Test-Path -LiteralPath $dataDir) { Remove-Item -LiteralPath $dataDir -Recurse -Force -ErrorAction SilentlyContinue; }; ");
+			string[] dataNames = new string[2] { SetupInfo.DataFolderName, SetupInfo.LegacyDataFolderName };
+			foreach (string name in dataNames)
+			{
+				string legacyPath = Path.Combine(Path.GetDirectoryName(dataDirectory) ?? localAppData, name);
+				script.Append("$dataDir = ");
+				script.Append(ToPowerShellLiteral(legacyPath));
+				script.Append("; if (Test-Path -LiteralPath $dataDir) { Remove-Item -LiteralPath $dataDir -Recurse -Force -ErrorAction SilentlyContinue; }; ");
+			}
 		}
 		script.Append("$tempDir = [IO.Path]::GetTempPath(); ");
-		script.Append("Get-ChildItem -LiteralPath $tempDir -Filter 'MySQLServiceController-*.result' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue;");
+		script.Append("Get-ChildItem -LiteralPath $tempDir -Filter 'MySQLManager-*.result' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue; Get-ChildItem -LiteralPath $tempDir -Filter 'MySQLServiceController-*.result' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue;");
 		string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script.ToString()));
 		string powerShell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell\\v1.0\\powershell.exe");
 		ProcessStartInfo startInfo = new ProcessStartInfo(powerShell)

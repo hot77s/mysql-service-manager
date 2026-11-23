@@ -419,10 +419,16 @@ internal static class ComponentInstaller
 			SafeDelete(target);
 		}
 		string temporary = target + ".part";
+		// 顺序：自定义地址 → 官方 CDN（当前版本，实测约快 10 倍）→ 官方归档（旧版本兜底）。
 		List<string> urls = new List<string>();
 		if (!string.IsNullOrWhiteSpace(job.Url))
 		{
 			urls.Add(job.Url);
+		}
+		string cdnUrl = ComponentCatalog.BuildDownloadUrl(job.Kind, job.Version);
+		if (!urls.Contains(cdnUrl))
+		{
+			urls.Add(cdnUrl);
 		}
 		string archiveUrl = ComponentCatalog.BuildArchiveUrl(job.Kind, job.Version);
 		if (!urls.Contains(archiveUrl))
@@ -432,7 +438,7 @@ internal static class ComponentInstaller
 		Exception lastError = null;
 		foreach (string url in urls)
 		{
-			report(2, "正在连接下载服务器…");
+			report(2, "正在连接下载服务器（官方 CDN）…");
 			try
 			{
 				DownloadFile(url, temporary, fileName, report);
@@ -447,7 +453,7 @@ internal static class ComponentInstaller
 		}
 		if (lastError != null)
 		{
-			throw new InvalidOperationException("安装包下载失败：" + lastError.Message + "\n\n请确认网络可以访问 cdn.mysql.com 后重试。");
+			throw new InvalidOperationException("安装包下载失败：" + lastError.Message + "\n\n请确认网络可以访问 cdn.mysql.com 或 downloads.mysql.com 后重试。");
 		}
 		SafeDelete(target);
 		File.Move(temporary, target);
@@ -471,7 +477,7 @@ internal static class ComponentInstaller
 		long total = response.ContentLength;
 		using Stream remote = response.GetResponseStream();
 		using FileStream local = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None);
-		byte[] buffer = new byte[81920];
+		byte[] buffer = new byte[262144];
 		long received = 0L;
 		int lastFraction = -1;
 		int read;

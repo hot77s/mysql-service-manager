@@ -35,7 +35,7 @@
 
 ## 安装
 
-从 [Releases](../../releases) 下载 `MySQL-Manager-1.6.1-Setup.exe`，双击运行。安装界面与主界面同一套风格，只有两步：
+从 [Releases](../../releases) 下载 `MySQL-Manager-1.6.2-Setup.exe`，双击运行。安装界面与主界面同一套风格，只有两步：
 
 1. **安装范围**：仅当前用户（不需要管理员，默认装到 `%LOCALAPPDATA%\Programs\MySQL Manager`）；或所有用户（装到 `C:\Program Files\MySQL Manager`，开始安装时请求管理员授权）。
 2. **程序安装位置**：安装文件夹名固定为 `MySQL Manager`，可改父目录。
@@ -61,8 +61,8 @@
 静默安装（仅本程序）：
 
 ```bat
-MySQL-Manager-1.6.1-Setup.exe --silent-install --install-dir "D:\Software\MySQL Manager"
-MySQL-Manager-1.6.1-Setup.exe --silent-install --scope machine --no-launch
+MySQL-Manager-1.6.2-Setup.exe --silent-install --install-dir "D:\Software\MySQL Manager"
+MySQL-Manager-1.6.2-Setup.exe --silent-install --scope machine --no-launch
 ```
 
 便携版可直接运行 `MySQLManager.exe`，但安装包会创建开始菜单 / 桌面快捷方式与卸载项。
@@ -115,7 +115,7 @@ dotnet build src/MySqlServiceController/MySQLServiceController.csproj -c Release
 :: 安装器（先把主程序与说明放入 payload.*）
 copy src\MySqlServiceController\bin\Release\MySQLManager.exe src\Installer\payload.app
 copy src\MySqlServiceController\bin\Release\MySQLManager.exe.config src\Installer\payload.config
-copy dist\1.6.1\使用说明.txt src\Installer\payload.guide
+copy dist\1.6.2\使用说明.txt src\Installer\payload.guide
 dotnet build src/Installer/Uninstall.csproj -c Release
 ```
 
@@ -132,7 +132,7 @@ src/Installer/                安装 / 卸载程序
 assets/icons2/                应用图标母版（SVG / PNG / ICO）
 docs/screenshots/             README 截图
 CHANGELOG.md                  版本记录
-更新说明-1.6.1.md              当前版本说明
+更新说明-1.6.2.md              当前版本说明
 ```
 
 ## 说明
