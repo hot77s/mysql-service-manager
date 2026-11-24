@@ -8,7 +8,7 @@ using System.Windows.Forms;
 
 namespace MySqlServiceController;
 
-/// <summary>主界面里的“安装组件”窗口：安装 / 升级 MySQL 服务与 MySQL Workbench。</summary>
+/// <summary>安装或卸载 MySQL Server、MySQL Workbench。</summary>
 internal sealed class ComponentInstallForm : Form
 {
 	private enum StatusKind
@@ -46,6 +46,20 @@ internal sealed class ComponentInstallForm : Form
 	private RoundedButton _serverBrowse;
 
 	private SlimCheckBox _serverServiceCheck;
+
+	private SlimCheckBox _serverPasswordCheck;
+
+	private Label _passwordHint;
+
+	private RoundedButton _serverUninstallButton;
+
+	private RoundedButton _workbenchUninstallButton;
+
+	private readonly ToolTip _toolTip = new ToolTip();
+
+	private List<InstalledComponent> _installedServers;
+
+	private List<InstalledComponent> _installedWorkbenches;
 
 	private Label _serverState;
 
@@ -100,6 +114,8 @@ internal sealed class ComponentInstallForm : Form
 	/// <summary>本次是否成功安装过组件（供主界面刷新使用）。</summary>
 	public bool AnyComponentInstalled { get; private set; }
 
+	public bool AnyComponentUninstalled { get; private set; }
+
 	/// <summary>本次安装的 MySQL 服务名称（没有注册服务时为 null）。</summary>
 	public string InstalledServiceName { get; private set; }
 
@@ -108,7 +124,7 @@ internal sealed class ComponentInstallForm : Form
 
 	public ComponentInstallForm()
 	{
-		Text = "安装组件";
+		Text = "组件管理";
 		base.StartPosition = FormStartPosition.CenterParent;
 		base.FormBorderStyle = FormBorderStyle.FixedDialog;
 		base.MaximizeBox = false;
@@ -129,10 +145,10 @@ internal sealed class ComponentInstallForm : Form
 		_serverOptions.AddRange(ComponentCatalog.GetOptions(ComponentCatalog.KindServer));
 		_workbenchOptions.AddRange(ComponentCatalog.GetOptions(ComponentCatalog.KindWorkbench));
 		BuildInterface();
+		RefreshInstalledComponents();
 		ApplyTheme();
-		RefreshStates();
 		LayoutContent();
-		SetStatus(StatusKind.Info, "勾选要安装的组件，然后点击“开始安装”。");
+		SetStatus(StatusKind.Info, "勾选要安装的组件，或点击对应的“卸载”按钮。");
 		base.Shown += ComponentInstallForm_Shown;
 	}
 
@@ -144,9 +160,9 @@ internal sealed class ComponentInstallForm : Form
 	private void BuildInterface()
 	{
 		SuspendLayout();
-		_titleLabel = MakeLabel("安装 MySQL 组件", 24, 18, 380, 32, Theme.Font(16.5f, FontStyle.Bold), Theme.Text);
+		_titleLabel = MakeLabel("管理 MySQL 组件", 24, 18, 380, 32, Theme.Font(16.5f, FontStyle.Bold), Theme.Text);
 		base.Controls.Add(_titleLabel);
-		_subtitleLabel = MakeLabel("自动下载官方安装包并静默安装，可选版本与安装位置", 24, 54, 520, 20, Theme.Font(9f, FontStyle.Regular), Theme.Muted);
+		_subtitleLabel = MakeLabel("安装官方 MSI，或卸载已登记的 MySQL Server 和 Workbench", 24, 54, 520, 20, Theme.Font(9f, FontStyle.Regular), Theme.Muted);
 		base.Controls.Add(_subtitleLabel);
 
 		// ---- MySQL 服务 ----
@@ -156,7 +172,7 @@ internal sealed class ComponentInstallForm : Form
 			BorderColor = Color.Transparent
 		};
 		base.Controls.Add(_serverCard);
-		_serverTitle = MakeLabel("MySQL 服务", 52, 16, 200, 24, Theme.Font(10.2f, FontStyle.Bold), Theme.Text);
+		_serverTitle = MakeLabel("MySQL Server", 52, 16, 200, 24, Theme.Font(10.2f, FontStyle.Bold), Theme.Text);
 		_serverCard.Controls.Add(_serverTitle);
 		_serverVersionCaption = MakeLabel("版本", 0, 0, 38, 20, Theme.Font(8.4f, FontStyle.Regular), Theme.Subtle);
 		_serverVersionCaption.TextAlign = ContentAlignment.MiddleRight;
@@ -166,7 +182,7 @@ internal sealed class ComponentInstallForm : Form
 		_serverCard.Controls.Add(_serverHint);
 		_serverCheck = new SlimCheckBox
 		{
-			Text = "安装 MySQL 服务",
+			Text = "安装 MySQL Server",
 			Checked = false
 		};
 		_serverCheck.CheckedChanged += delegate
@@ -216,7 +232,7 @@ internal sealed class ComponentInstallForm : Form
 		_serverCard.Controls.Add(_serverBrowse);
 		_serverServiceCheck = new SlimCheckBox
 		{
-			Text = "初始化数据目录并注册为 Windows 服务（root 初始密码为空）",
+			Text = "初始化数据目录并注册为 Windows 服务",
 			Checked = true
 		};
 		_serverServiceCheck.CheckedChanged += delegate
@@ -224,6 +240,14 @@ internal sealed class ComponentInstallForm : Form
 			RefreshStates();
 		};
 		_serverCard.Controls.Add(_serverServiceCheck);
+		_serverPasswordCheck = new SlimCheckBox { Text = "设置 root 密码", Checked = true };
+		_serverPasswordCheck.CheckedChanged += delegate { RefreshStates(); };
+		_serverCard.Controls.Add(_serverPasswordCheck);
+		_passwordHint = MakeLabel(string.Empty, 0, 0, 100, 20, Theme.Font(8.4f, FontStyle.Regular), Theme.Muted);
+		_passwordHint.TextAlign = ContentAlignment.MiddleLeft;
+		_serverCard.Controls.Add(_passwordHint);
+		_serverUninstallButton = CreateUninstallButton(ComponentCatalog.KindServer, "卸载 MySQL Server");
+		_serverCard.Controls.Add(_serverUninstallButton);
 		_serverState = MakeLabel(string.Empty, 40, 0, 320, 20, Theme.Font(8.4f, FontStyle.Regular), Theme.Subtle);
 		_serverState.AutoEllipsis = true;
 		_serverCard.Controls.Add(_serverState);
@@ -290,6 +314,8 @@ internal sealed class ComponentInstallForm : Form
 			Browse(_workbenchPath, "选择 MySQL Workbench 的安装根目录", ComponentCatalog.KindWorkbench, _workbenchOptions, _workbenchIndex);
 		};
 		_workbenchCard.Controls.Add(_workbenchBrowse);
+		_workbenchUninstallButton = CreateUninstallButton(ComponentCatalog.KindWorkbench, "卸载 MySQL Workbench");
+		_workbenchCard.Controls.Add(_workbenchUninstallButton);
 		_workbenchState = MakeLabel(string.Empty, 40, 0, 320, 20, Theme.Font(8.4f, FontStyle.Regular), Theme.Subtle);
 		_workbenchState.AutoEllipsis = true;
 		_workbenchCard.Controls.Add(_workbenchState);
@@ -342,6 +368,19 @@ internal sealed class ComponentInstallForm : Form
 		base.AcceptButton = _installButton;
 		base.CancelButton = _closeButton;
 		ResumeLayout(performLayout: true);
+	}
+
+	private RoundedButton CreateUninstallButton(string kind, string name)
+	{
+		RoundedButton button = new RoundedButton
+		{
+			Text = "卸载…",
+			AccessibleName = name,
+			Font = Theme.Font(8.6f, FontStyle.Bold),
+			Radius = 8f
+		};
+		button.Click += delegate { ShowUninstallMenu(button, kind); };
+		return button;
 	}
 
 	private static Label MakeLabel(string text, int x, int y, int width, int height, Font font, Color color)
@@ -477,7 +516,7 @@ internal sealed class ComponentInstallForm : Form
 
 			// MySQL 服务卡片
 			int top = Dp(92);
-			int serverH = Dp(206);
+			int serverH = Dp(230);
 			_serverCard.SetBounds(margin, top, contentW, serverH);
 			_serverCard.Radius = Dp(16);
 			_serverTitle.SetBounds(Dp(22), Dp(16), Dp(220), Dp(24));
@@ -490,7 +529,10 @@ internal sealed class ComponentInstallForm : Form
 			_serverPath.SetBounds(pathLeft, Dp(102), pathW, Dp(30));
 			_serverBrowse.SetBounds(right - Dp(20) - browseW, Dp(102), browseW, Dp(30));
 			_serverServiceCheck.SetBounds(Dp(22), Dp(142), contentW - Dp(44), Dp(22));
-			_serverState.SetBounds(Dp(22), Dp(172), contentW - Dp(44), Dp(20));
+			_serverPasswordCheck.SetBounds(Dp(22), Dp(167), Dp(138), Dp(22));
+			_passwordHint.SetBounds(Dp(165), Dp(167), contentW - Dp(187), Dp(22));
+			_serverUninstallButton.SetBounds(right - Dp(20) - browseW, Dp(194), browseW, buttonH);
+			_serverState.SetBounds(Dp(22), Dp(198), _serverUninstallButton.Left - Dp(34), Dp(20));
 
 			// Workbench 卡片
 			int wbTop = _serverCard.Bottom + Dp(14);
@@ -503,7 +545,8 @@ internal sealed class ComponentInstallForm : Form
 			_workbenchVersionCaption.SetBounds(_workbenchVersionButton.Left - Dp(44), Dp(46) + (buttonH - Dp(20)) / 2, Dp(38), Dp(20));
 			_workbenchPath.SetBounds(pathLeft, Dp(86), pathW, Dp(30));
 			_workbenchBrowse.SetBounds(right - Dp(20) - browseW, Dp(86), browseW, Dp(30));
-			_workbenchState.SetBounds(Dp(22), Dp(124), contentW - Dp(44), Dp(20));
+			_workbenchUninstallButton.SetBounds(right - Dp(20) - browseW, Dp(120), browseW, buttonH);
+			_workbenchState.SetBounds(Dp(22), Dp(124), _workbenchUninstallButton.Left - Dp(34), Dp(20));
 
 			// 状态与按钮
 			int statusTop = _workbenchCard.Bottom + Dp(16);
@@ -558,6 +601,8 @@ internal sealed class ComponentInstallForm : Form
 			StyleNeutral(_serverBrowse, Theme.Surface);
 			StyleNeutral(_workbenchVersionButton, Theme.Surface);
 			StyleNeutral(_workbenchBrowse, Theme.Surface);
+			StyleUninstall(_serverUninstallButton);
+			StyleUninstall(_workbenchUninstallButton);
 			StyleNeutral(_closeButton, Theme.Background);
 			_installButton.NormalColor = Theme.Accent;
 			_installButton.HoverColor = Theme.Mix(Theme.Accent, Color.White, 0.12);
@@ -587,6 +632,21 @@ internal sealed class ComponentInstallForm : Form
 		button.ForeColor = Theme.Text;
 		button.ButtonBorderColor = Theme.Border;
 		button.SurfaceColor = surface;
+	}
+
+	private static void StyleUninstall(RoundedButton button)
+	{
+		StyleNeutral(button, Theme.Surface);
+		button.NormalColor = Theme.DangerSoft;
+		button.HoverColor = Theme.Mix(Theme.DangerSoft, Theme.Danger, 0.12);
+		button.PressedColor = Theme.Mix(Theme.DangerSoft, Theme.Danger, 0.22);
+		button.ForeColor = Theme.Danger;
+	}
+
+	private void RefreshInstalledComponents()
+	{
+		_installedServers = ComponentCatalog.FindUninstallableComponents(ComponentCatalog.KindServer);
+		_installedWorkbenches = ComponentCatalog.FindUninstallableComponents(ComponentCatalog.KindWorkbench);
 	}
 
 	private void ApplyStatusColors()
@@ -659,46 +719,55 @@ internal sealed class ComponentInstallForm : Form
 		_serverPath.Enabled = serverOn && !_busy;
 		_serverBrowse.Enabled = serverOn && !_busy;
 		_serverServiceCheck.Enabled = serverOn && !_busy;
+		_serverPasswordCheck.Enabled = serverOn && _serverServiceCheck.Checked && !_busy;
+		_passwordHint.Text = !_serverServiceCheck.Checked ? "仅安装程序文件，不设置密码" :
+			(_serverPasswordCheck.Checked ? "推荐：点击开始安装后输入并确认密码" : "不设置：新实例的 root 密码将为空");
+		_passwordHint.ForeColor = _serverPasswordCheck.Enabled && !_serverPasswordCheck.Checked ? Theme.Warning : Theme.Muted;
 		_serverCheck.Enabled = !_busy;
 		_workbenchVersionButton.Enabled = !_busy;
 		_workbenchPath.Enabled = workbenchOn && !_busy;
 		_workbenchBrowse.Enabled = workbenchOn && !_busy;
 		_workbenchCheck.Enabled = !_busy;
-		string installedServer = ComponentCatalog.DescribeInstalled(ComponentCatalog.KindServer, out string serverDirectory);
-		string installedWorkbench = ComponentCatalog.DescribeInstalled(ComponentCatalog.KindWorkbench, out string workbenchDirectory);
+		_serverUninstallButton.Enabled = !_busy && _installedServers.Count > 0;
+		_workbenchUninstallButton.Enabled = !_busy && _installedWorkbenches.Count > 0;
+		_toolTip.SetToolTip(_serverUninstallButton, "选择要卸载的 MySQL Server 版本");
+		_toolTip.SetToolTip(_workbenchUninstallButton, "选择要卸载的 MySQL Workbench 版本");
 		if (serverOn)
 		{
 			string serviceName = ComponentCatalog.DefaultServiceName(_serverOptions[_serverIndex].Version);
 			_serverState.Text = (_serverServiceCheck.Checked ? ("安装后初始化数据目录，并注册为 Windows 服务 " + serviceName) : "仅安装程序文件，不初始化数据目录、不注册服务");
 			_serverState.ForeColor = Theme.Muted;
 		}
-		else if (installedServer != null)
-		{
-			_serverState.Text = installedServer + "  ·  " + serverDirectory;
-			_serverState.ForeColor = Theme.Success;
-		}
 		else
 		{
-			_serverState.Text = "当前未检测到已安装的 MySQL 服务";
-			_serverState.ForeColor = Theme.Subtle;
+			DescribeComponentState(_serverState, ComponentCatalog.KindServer, _installedServers);
 		}
 		if (workbenchOn)
 		{
 			_workbenchState.Text = "安装后可在主界面直接打开 Workbench";
 			_workbenchState.ForeColor = Theme.Muted;
 		}
-		else if (installedWorkbench != null)
-		{
-			_workbenchState.Text = installedWorkbench + "  ·  " + workbenchDirectory;
-			_workbenchState.ForeColor = Theme.Success;
-		}
 		else
 		{
-			_workbenchState.Text = "当前未检测到已安装的 MySQL Workbench";
-			_workbenchState.ForeColor = Theme.Subtle;
+			DescribeComponentState(_workbenchState, ComponentCatalog.KindWorkbench, _installedWorkbenches);
 		}
 		_installButton.Enabled = !_busy;
 		_closeButton.Enabled = !_busy;
+	}
+
+	private void DescribeComponentState(Label label, string kind, List<InstalledComponent> installed)
+	{
+		if (installed.Count > 0)
+		{
+			label.Text = installed.Count == 1 ? "已安装：" + installed[0].Label : "检测到 " + installed.Count + " 个已安装版本，可选择卸载";
+			label.ForeColor = Theme.Success;
+			_toolTip.SetToolTip(label, installed.Count == 1 ? installed[0].Directory : label.Text);
+			return;
+		}
+		string found = ComponentCatalog.DescribeInstalled(kind, out string directory);
+		label.Text = found == null ? "未检测到可卸载的 MSI 安装" : "检测到程序文件，但未找到可卸载的 MSI 记录";
+		label.ForeColor = Theme.Subtle;
+		_toolTip.SetToolTip(label, directory);
 	}
 
 	private static string VersionText(List<ComponentOption> options, int index)
@@ -763,7 +832,7 @@ internal sealed class ComponentInstallForm : Form
 		}
 	}
 
-	private void ShowVersionMenu(RoundedButton owner, List<ComponentOption> options, int selected, Action<int> onPicked)
+	private ContextMenuStrip PrepareMenu()
 	{
 		// 复用同一个菜单实例：如果每次都在 Closed 里 Dispose，ToolStripManager
 		// 仍把它当作活动下拉菜单，下一次鼠标按下会访问已释放对象并崩溃。
@@ -791,6 +860,12 @@ internal sealed class ComponentInstallForm : Form
 			menu.Items.RemoveAt(0);
 			stale.Dispose();
 		}
+		return menu;
+	}
+
+	private void ShowVersionMenu(RoundedButton owner, List<ComponentOption> options, int selected, Action<int> onPicked)
+	{
+		ContextMenuStrip menu = PrepareMenu();
 		for (int i = 0; i < options.Count; i++)
 		{
 			int index = i;
@@ -809,12 +884,113 @@ internal sealed class ComponentInstallForm : Form
 		menu.Show(owner, new Point(0, owner.Height + Dp(4)));
 	}
 
+	private void ShowUninstallMenu(RoundedButton owner, string kind)
+	{
+		if (_busy)
+		{
+			return;
+		}
+		RefreshInstalledComponents();
+		RefreshStates();
+		List<InstalledComponent> items = kind == ComponentCatalog.KindServer ? _installedServers : _installedWorkbenches;
+		if (items.Count == 0)
+		{
+			SetStatus(StatusKind.Warning, "未找到可卸载的 Windows Installer 记录。");
+			return;
+		}
+		ContextMenuStrip menu = PrepareMenu();
+		foreach (InstalledComponent target in items)
+		{
+			ToolStripMenuItem item = new ToolStripMenuItem("卸载 " + target.Label)
+			{
+				ForeColor = Theme.Text,
+				ToolTipText = target.Directory ?? string.Empty
+			};
+			item.Click += async delegate { await ConfirmAndUninstallAsync(target); };
+			menu.Items.Add(item);
+		}
+		menu.Show(owner, new Point(0, owner.Height + Dp(4)));
+	}
+
+	private async Task ConfirmAndUninstallAsync(InstalledComponent target)
+	{
+		if (_busy)
+		{
+			return;
+		}
+		bool server = target.Kind == ComponentCatalog.KindServer;
+		string impact = server
+			? "卸载会停止匹配的 MySQL 服务，现有数据库连接将中断。MySQL管家不会主动删除数据目录或配置文件；请先备份，尤其是数据位于安装目录内时。"
+			: "请先关闭 Workbench。MySQL管家不会主动删除 Workbench 的连接配置，也不会卸载 MySQL Server。";
+		string directory = string.IsNullOrWhiteSpace(target.Directory) ? "Windows Installer 未记录安装位置" : target.Directory;
+		if (MessageBox.Show(this, "确认卸载以下组件？\n\n" + target.Label + "\n" + directory + "\n\n" + impact,
+			"确认卸载", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+		{
+			return;
+		}
+		_busy = true;
+		RefreshStates();
+		_progressLine.Visible = true;
+		_progressLine.Reset();
+		SetStatus(StatusKind.Info, "准备卸载 " + target.DisplayName + "…", 0);
+		try
+		{
+			ComponentJob job = new ComponentJob { Kind = target.Kind, UninstallProductCode = target.ProductCode, MachineWide = target.MachineWide };
+			ComponentResult result = await Task.Run(() => ComponentInstaller.Run(job, ReportProgress));
+			if (IsDisposed)
+			{
+				return;
+			}
+			if (result.Success)
+			{
+				AnyComponentUninstalled = true;
+				SetStatus(result.Detail == null ? StatusKind.Success : StatusKind.Warning, result.Message, 100);
+				if (result.Detail != null)
+				{
+					MessageBox.Show(this, result.Message + "\n\n" + result.Detail, "卸载结果", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+				}
+			}
+			else if (result.Cancelled)
+			{
+				SetStatus(StatusKind.Warning, result.Message, 0);
+			}
+			else
+			{
+				ShowUninstallError(result.Message);
+			}
+		}
+		catch (Exception ex)
+		{
+			AppLog.Error("卸载 " + target.DisplayName + " 失败。", ex);
+			if (!IsDisposed)
+			{
+				ShowUninstallError(ex.Message);
+			}
+		}
+		finally
+		{
+			if (!IsDisposed)
+			{
+				_busy = false;
+				_progressLine.Visible = false;
+				RefreshInstalledComponents();
+				RefreshStates();
+			}
+		}
+	}
+
+	private void ShowUninstallError(string message)
+	{
+		SetStatus(StatusKind.Error, "卸载失败：" + FirstLine(message), 0);
+		MessageBox.Show(this, message + "\n\n日志：" + AppLog.LogPath, "卸载失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+	}
+
 	protected override void Dispose(bool disposing)
 	{
-		if (disposing && _versionMenu != null)
+		if (disposing)
 		{
-			_versionMenu.Dispose();
-			_versionMenu = null;
+			_versionMenu?.Dispose();
+			_toolTip.Dispose();
 		}
 		base.Dispose(disposing);
 	}
@@ -881,6 +1057,76 @@ internal sealed class ComponentInstallForm : Form
 		return 0;
 	}
 
+	private bool TryReadRootPassword(out string password)
+	{
+		password = null;
+		using Form dialog = new Form
+		{
+			Text = "设置 MySQL root 密码",
+			StartPosition = FormStartPosition.CenterParent,
+			FormBorderStyle = FormBorderStyle.FixedDialog,
+			MaximizeBox = false,
+			MinimizeBox = false,
+			ShowInTaskbar = false,
+			AutoScaleMode = AutoScaleMode.None,
+			ClientSize = new Size(Dp(424), Dp(224)),
+			BackColor = Theme.Background,
+			ForeColor = Theme.Text,
+			Font = Theme.Font(9.5f, FontStyle.Regular)
+		};
+		Label note = MakeLabel("密码仅用于本次新建的实例，不会由 MySQL管家保存。", Dp(20), Dp(18), Dp(384), Dp(24), dialog.Font, Theme.Text);
+		Label firstLabel = MakeLabel("root 密码", Dp(20), Dp(55), Dp(94), Dp(26), dialog.Font, Theme.Text);
+		Label secondLabel = MakeLabel("确认密码", Dp(20), Dp(95), Dp(94), Dp(26), dialog.Font, Theme.Text);
+		TextBox first = CreatePasswordInput("root 密码", 55);
+		TextBox second = CreatePasswordInput("确认密码", 95);
+		Label status = MakeLabel(string.Empty, Dp(20), Dp(135), Dp(384), Dp(24), Theme.Font(8.7f, FontStyle.Regular), Theme.Danger);
+		RoundedButton cancel = new RoundedButton { Text = "取消", DialogResult = DialogResult.Cancel, Bounds = new Rectangle(Dp(229), Dp(172), Dp(78), Dp(32)), Font = dialog.Font };
+		RoundedButton confirm = new RoundedButton { Text = "确认", Bounds = new Rectangle(Dp(319), Dp(172), Dp(85), Dp(32)), Font = dialog.Font };
+		StyleNeutral(cancel, Theme.Background);
+		StyleNeutral(confirm, Theme.Background);
+		confirm.ForeColor = Theme.Accent;
+		confirm.ButtonBorderColor = Theme.Accent;
+		confirm.Click += delegate
+		{
+			if (!ComponentInstaller.IsValidRootPassword(first.Text))
+			{
+				status.Text = "密码不能全为空白、有控制字符或超过 256 字节。";
+				first.Focus();
+			}
+			else if (!string.Equals(first.Text, second.Text, StringComparison.Ordinal))
+			{
+				status.Text = "两次输入的密码不一致。";
+				second.Focus();
+			}
+			else
+			{
+				dialog.DialogResult = DialogResult.OK;
+			}
+		};
+		dialog.Controls.AddRange(new Control[] { note, firstLabel, first, secondLabel, second, status, cancel, confirm });
+		dialog.AcceptButton = confirm;
+		dialog.CancelButton = cancel;
+		dialog.ActiveControl = first;
+		if (dialog.ShowDialog(this) == DialogResult.OK)
+		{
+			password = first.Text;
+		}
+		first.Clear();
+		second.Clear();
+		return password != null;
+	}
+
+	private TextBox CreatePasswordInput(string name, int y) => new TextBox
+	{
+		AccessibleName = name,
+		UseSystemPasswordChar = true,
+		MaxLength = 256,
+		Bounds = new Rectangle(Dp(122), Dp(y), Dp(282), Dp(28)),
+		BackColor = Theme.Surface,
+		ForeColor = Theme.Text,
+		BorderStyle = BorderStyle.FixedSingle
+	};
+
 	private async void InstallButton_Click(object sender, EventArgs e)
 	{
 		if (_busy)
@@ -888,6 +1134,7 @@ internal sealed class ComponentInstallForm : Form
 			return;
 		}
 		List<ComponentJob> jobs = new List<ComponentJob>();
+		string rootPassword = null;
 		if (_serverCheck.Checked)
 		{
 			string directory = _serverPath.Text?.Trim();
@@ -902,6 +1149,7 @@ internal sealed class ComponentInstallForm : Form
 				Url = ComponentCatalog.BuildDownloadUrl(ComponentCatalog.KindServer, _serverOptions[_serverIndex].Version),
 				InstallDirectory = directory,
 				RegisterService = _serverServiceCheck.Checked,
+				SetRootPassword = _serverServiceCheck.Checked && _serverPasswordCheck.Checked,
 				ServiceName = ComponentCatalog.DefaultServiceName(_serverOptions[_serverIndex].Version)
 			});
 		}
@@ -925,6 +1173,22 @@ internal sealed class ComponentInstallForm : Form
 			SetStatus(StatusKind.Warning, "请先勾选要安装的组件。", 0, 6);
 			return;
 		}
+		ComponentJob serverJob = jobs.Find(job => job.IsServer && job.RegisterService);
+		if (serverJob != null)
+		{
+			if (serverJob.SetRootPassword)
+			{
+				if (!TryReadRootPassword(out rootPassword))
+				{
+					return;
+				}
+			}
+			else if (MessageBox.Show(this, "新实例的 root 账户将没有密码。仅建议在受控的本地开发环境使用，并在首次使用后尽快设置密码。\n\n仍要继续安装吗？",
+				"确认不设置 root 密码", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+			{
+				return;
+			}
+		}
 		_busy = true;
 		RefreshStates();
 		_installButton.Text = "正在安装…";
@@ -938,7 +1202,7 @@ internal sealed class ComponentInstallForm : Form
 			ComponentResult result;
 			try
 			{
-				result = await Task.Run(() => ComponentInstaller.Run(job, ReportProgress));
+				result = await Task.Run(() => ComponentInstaller.Run(job, ReportProgress, job.SetRootPassword ? rootPassword : null));
 			}
 			catch (Exception ex)
 			{
@@ -948,6 +1212,13 @@ internal sealed class ComponentInstallForm : Form
 					Success = false,
 					Message = ex.Message
 				};
+			}
+			finally
+			{
+				if (job.SetRootPassword)
+				{
+					rootPassword = null;
+				}
 			}
 			if (base.IsDisposed)
 			{
@@ -990,6 +1261,7 @@ internal sealed class ComponentInstallForm : Form
 		_busy = false;
 		_installButton.Text = "开始安装";
 		_progressLine.Visible = false;
+		RefreshInstalledComponents();
 		RefreshStates();
 		if (!allOk)
 		{
@@ -1079,7 +1351,7 @@ internal sealed class ComponentInstallForm : Form
 		if (_busy && e.CloseReason == CloseReason.UserClosing)
 		{
 			e.Cancel = true;
-			SetStatus(StatusKind.Info, "安装进行中，请等待完成后再关闭。", -1, 5);
+			SetStatus(StatusKind.Info, "组件操作进行中，请等待完成后再关闭。", -1, 5);
 		}
 		base.OnFormClosing(e);
 	}

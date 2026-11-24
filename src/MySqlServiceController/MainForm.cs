@@ -361,6 +361,7 @@ internal sealed class MainForm : Form
 		_settingsButton.HoverColor = Theme.Mix(Theme.AccentSoft, Theme.Accent, 0.1);
 		_settingsButton.PressedColor = Theme.Mix(Theme.AccentSoft, Theme.Accent, 0.18);
 		_settingsButton.ForeColor = Theme.Accent;
+		_settingsButton.ButtonBorderColor = Theme.Mix(Theme.Border, Theme.Accent, 0.45);
 		_settingsButton.SurfaceColor = Theme.Background;
 		_workbenchButton.NormalColor = Theme.Surface;
 		_workbenchButton.HoverColor = Theme.SurfaceAlt;
@@ -647,7 +648,7 @@ internal sealed class MainForm : Form
 		_errorLogButton.AccessibleName = "查看 MySQL 错误日志";
 		base.Controls.Add(_errorLogButton);
 		_componentsButton = new RoundedButton();
-		_componentsButton.Text = "安装组件";
+		_componentsButton.Text = "组件管理";
 		_componentsButton.NormalColor = Theme.AccentSoft;
 		_componentsButton.HoverColor = Theme.Mix(Theme.AccentSoft, Theme.Accent, 0.12);
 		_componentsButton.PressedColor = Theme.Mix(Theme.AccentSoft, Theme.Accent, 0.2);
@@ -657,7 +658,7 @@ internal sealed class MainForm : Form
 		_componentsButton.Font = Theme.Font(9f, FontStyle.Bold);
 		_componentsButton.Radius = 10f;
 		_componentsButton.Click += ComponentsButton_Click;
-		_componentsButton.AccessibleName = "安装 MySQL 服务或 MySQL Workbench";
+		_componentsButton.AccessibleName = "管理 MySQL Server 和 MySQL Workbench";
 		base.Controls.Add(_componentsButton);
 		_diagnosticsHint = MakeLabel("体检可发现端口冲突、目录缺失与配置错误", 0, 0, 1, 1, Theme.Font(8.5f, FontStyle.Regular), Theme.Subtle);
 		_diagnosticsHint.AutoSize = false;
@@ -665,7 +666,7 @@ internal sealed class MainForm : Form
 		base.Controls.Add(_diagnosticsHint);
 		_toolTip.SetToolTip(_preflightButton, "检查服务、my.ini、数据目录、端口占用与磁盘空间");
 		_toolTip.SetToolTip(_errorLogButton, "查看 MySQL 的 .err 错误日志，可筛选错误与警告");
-		_toolTip.SetToolTip(_componentsButton, "安装或升级 MySQL 服务与 MySQL Workbench，可选版本与安装位置");
+		_toolTip.SetToolTip(_componentsButton, "安装或卸载 MySQL Server 与 MySQL Workbench");
 
 		_footerHintLabel = MakeLabel("启停操作不会删除数据库文件", Dp(24), Dp(500), Dp(420), Dp(18), Theme.Font(8.5f, FontStyle.Regular), Theme.Subtle);
 		_footerHintLabel.AutoSize = true;
@@ -1487,7 +1488,7 @@ internal sealed class MainForm : Form
 		{
 			if (!snapshot.Installed)
 			{
-				ShowBanner(BannerKind.Warning, "未找到服务“" + snapshot.ServiceName + "”。可以安装 MySQL 服务，或手动选择服务名。", "安装组件", "components");
+				ShowBanner(BannerKind.Warning, "未找到服务“" + snapshot.ServiceName + "”。可以安装 MySQL 服务，或手动选择服务名。", "组件管理", "components");
 			}
 			else if (snapshot.IsDisabled)
 			{
@@ -1708,11 +1709,11 @@ internal sealed class MainForm : Form
 		{
 			return;
 		}
-		if (!form.AnyComponentInstalled)
+		if (!form.AnyComponentInstalled && !form.AnyComponentUninstalled)
 		{
 			return;
 		}
-		if (!string.IsNullOrWhiteSpace(form.InstalledServiceName))
+		if (!string.IsNullOrWhiteSpace(form.InstalledServiceName) && ServiceManager.ServiceExists(form.InstalledServiceName))
 		{
 			_config.ServiceName = form.InstalledServiceName;
 			_config.MySqlPath = ServiceManager.TryGetImagePath(form.InstalledServiceName);
@@ -1728,6 +1729,11 @@ internal sealed class MainForm : Form
 		_workbenchInstalledVersion = string.Empty;
 		_bannerHoldUntil = DateTime.MinValue;
 		await RefreshStatusAsync();
+		if (form.AnyComponentUninstalled)
+		{
+			await CheckWorkbenchUpdateIfDueAsync(manual: false);
+			return;
+		}
 		if (!string.IsNullOrWhiteSpace(form.InstalledWorkbenchDirectory))
 		{
 			await CheckWorkbenchUpdateIfDueAsync(manual: true);
@@ -1744,7 +1750,7 @@ internal sealed class MainForm : Form
 		string text = WorkbenchLocator.Find(_config.WorkbenchPath);
 		if (string.IsNullOrEmpty(text))
 		{
-			DialogResult dialogResult = MessageBox.Show("未找到 MySQL Workbench。\n\n“是”：打开“安装组件”自动安装；\n“否”：手动选择已安装的 MySQLWorkbench.exe。", "未找到 Workbench", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question, MessageBoxDefaultButton.Button1);
+			DialogResult dialogResult = MessageBox.Show("未找到 MySQL Workbench。\n\n“是”：打开“组件管理”自动安装；\n“否”：手动选择已安装的 MySQLWorkbench.exe。", "未找到 Workbench", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question, MessageBoxDefaultButton.Button1);
 			if (dialogResult == DialogResult.Yes)
 			{
 				ComponentsButton_Click(sender, EventArgs.Empty);

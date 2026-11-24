@@ -62,7 +62,7 @@ internal static class WorkbenchUpdateChecker
 				return string.Empty;
 			}
 			Match match = Regex.Match(text, "\\d+(?:\\.\\d+){1,3}");
-			return match.Success ? match.Value : text.Trim();
+			return match.Success ? ComponentCatalog.FormatVersion(match.Value) : text.Trim();
 		}
 		catch
 		{

@@ -425,7 +425,7 @@ internal static class ServiceManager
 		};
 	}
 
-	private static string NormalizeImagePath(string rawPath)
+	internal static string NormalizeImagePath(string rawPath)
 	{
 		if (string.IsNullOrWhiteSpace(rawPath))
 		{

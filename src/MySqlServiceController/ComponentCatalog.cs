@@ -28,6 +28,19 @@ internal sealed class ComponentOption
 	}
 }
 
+/// <summary>Windows Installer 登记的一个可卸载组件。</summary>
+internal sealed class InstalledComponent
+{
+	public string Kind { get; set; }
+	public string DisplayName { get; set; }
+	public string Version { get; set; }
+	public string Directory { get; set; }
+	public Guid ProductCode { get; set; }
+	public bool MachineWide { get; set; }
+
+	public string Label => DisplayName + (string.IsNullOrWhiteSpace(Version) ? string.Empty : "  ·  " + ComponentCatalog.FormatVersion(Version)) + (MachineWide ? string.Empty : "（当前用户）");
+}
+
 /// <summary>
 /// MySQL 服务与 Workbench 的版本目录。默认选中最新版，联网时可从 winget 官方清单
 /// 补充更新的版本；联网失败不影响内置目录。
@@ -107,6 +120,18 @@ internal static class ComponentCatalog
 	{
 		string[] parts = (version ?? string.Empty).Split('.');
 		return (parts.Length >= 2) ? (parts[0] + "." + parts[1]) : (version ?? string.Empty);
+	}
+
+	/// <summary>显示用版本号：MySQL 的 MSI 会把 Workbench 写成 26.10.0.0，末尾多余的 .0 去掉。</summary>
+	public static string FormatVersion(string version)
+	{
+		string[] parts = (version ?? string.Empty).Trim().Split('.');
+		int count = parts.Length;
+		while (count > 3 && parts[count - 1].Length > 0 && parts[count - 1].Trim('0').Length == 0)
+		{
+			count--;
+		}
+		return string.Join(".", parts, 0, count);
 	}
 
 	public static string DefaultServiceName(string version)
@@ -270,6 +295,75 @@ internal static class ComponentCatalog
 		string folder = (Path.GetFileName(directory) ?? string.Empty).Trim();
 		string version = folder.StartsWith("MySQL Server", StringComparison.OrdinalIgnoreCase) ? folder.Substring("MySQL Server".Length).Trim() : (folder.StartsWith("MySQL Workbench", StringComparison.OrdinalIgnoreCase) ? folder.Substring("MySQL Workbench".Length).Trim() : folder);
 		return string.IsNullOrWhiteSpace(version) ? ("已安装 " + label) : ("已安装 " + label + " " + version);
+	}
+
+	private const string UninstallRegistryPath = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
+
+	internal static string IdentifyInstalledKind(string displayName)
+	{
+		string name = displayName?.Trim() ?? string.Empty;
+		// 只识别 Server / Workbench 本身，不把 MySQL Installer、样例、Shell 等算进去。
+		if (Regex.IsMatch(name, @"^MySQL (?:Community |Enterprise )?Server(?: \d[\d.]*| \d[\d.]* (?:Community|Enterprise) Edition)?(?: \((?:x64|x86|64-bit|32-bit)\))?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+		{
+			return KindServer;
+		}
+		if (Regex.IsMatch(name, @"^MySQL Workbench(?: \d[\d.]*)?(?: (?:CE|SE|OSS|Community Edition|Commercial Edition))?(?: \((?:x64|x86|64-bit|32-bit)\))?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+		{
+			return KindWorkbench;
+		}
+		return null;
+	}
+
+	public static List<InstalledComponent> FindUninstallableComponents(string kind)
+	{
+		List<InstalledComponent> matches = new List<InstalledComponent>();
+		HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		RegistryView[] views = Environment.Is64BitOperatingSystem ? new[] { RegistryView.Registry64, RegistryView.Registry32 } : new[] { RegistryView.Registry32 };
+		foreach (RegistryHive hive in new[] { RegistryHive.LocalMachine, RegistryHive.CurrentUser })
+		{
+			foreach (RegistryView view in views)
+			{
+				try
+				{
+					using RegistryKey baseKey = RegistryKey.OpenBaseKey(hive, view);
+					using RegistryKey uninstall = baseKey.OpenSubKey(UninstallRegistryPath);
+					if (uninstall == null)
+					{
+						continue;
+					}
+					foreach (string keyName in uninstall.GetSubKeyNames())
+					{
+						if (!Guid.TryParseExact(keyName, "B", out Guid productCode))
+						{
+							continue;
+						}
+						using RegistryKey entry = uninstall.OpenSubKey(keyName);
+						if (entry == null || !Equals(entry.GetValue("WindowsInstaller"), 1) || Equals(entry.GetValue("NoRemove"), 1))
+						{
+							continue;
+						}
+						string name = entry.GetValue("DisplayName") as string;
+						if (IdentifyInstalledKind(name) == kind && seen.Add(hive + ":" + productCode.ToString("B")))
+						{
+							matches.Add(new InstalledComponent
+							{
+								Kind = kind,
+								DisplayName = name.Trim(),
+								Version = (entry.GetValue("DisplayVersion") as string)?.Trim(),
+								Directory = (entry.GetValue("InstallLocation") as string)?.Trim().Trim('"'),
+								ProductCode = productCode,
+								MachineWide = hive == RegistryHive.LocalMachine
+							});
+						}
+					}
+				}
+				catch (Exception ex)
+				{
+					AppLog.Warning("读取组件卸载项失败（" + hive + "/" + view + "）：" + ex.Message);
+				}
+			}
+		}
+		return matches.OrderByDescending(item => Version.TryParse(item.Version, out Version version) ? version : new Version()).ToList();
 	}
 
 	/// <summary>从注册表卸载项里取 MySQL 相关产品的安装版本（用于展示，失败返回空）。</summary>

@@ -1,14 +1,22 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Pipes;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
+using System.Security.AccessControl;
+using System.Security.Principal;
+using System.ServiceProcess;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace MySqlServiceController;
@@ -34,6 +42,18 @@ internal sealed class ComponentJob
 
 	[DataMember(Order = 6)]
 	public string ServiceName { get; set; }
+
+	[DataMember(Order = 7, EmitDefaultValue = false)]
+	public bool SetRootPassword { get; set; }
+
+	[DataMember(Order = 8, EmitDefaultValue = false)]
+	public Guid UninstallProductCode { get; set; }
+
+	[DataMember(Order = 9, EmitDefaultValue = false)]
+	public bool MachineWide { get; set; }
+
+	[IgnoreDataMember]
+	public bool IsUninstall => UninstallProductCode != Guid.Empty;
 
 	[IgnoreDataMember]
 	public bool IsServer => string.Equals(Kind, ComponentCatalog.KindServer, StringComparison.OrdinalIgnoreCase);
@@ -114,20 +134,28 @@ internal static class ComponentInstaller
 		}
 	}
 
-	/// <summary>安装入口：需要管理员时自动以管理员身份重启自身执行。</summary>
-	public static ComponentResult Run(ComponentJob job, Action<int, string> report)
+	/// <summary>执行组件任务；当前用户的 MSI 卸载保留原用户上下文。</summary>
+	public static ComponentResult Run(ComponentJob job, Action<int, string> report, string rootPassword = null)
 	{
-		if (IsElevated)
+		if (IsElevated || (job.IsUninstall && !job.MachineWide))
 		{
-			return Install(job, report);
+			return Execute(job, report, rootPassword);
 		}
-		return RunElevated(job, report);
+		return RunElevated(job, report, rootPassword);
 	}
 
-	/// <summary>在当前进程（需管理员）执行安装。</summary>
-	public static ComponentResult Install(ComponentJob job, Action<int, string> report)
+	private static ComponentResult Execute(ComponentJob job, Action<int, string> report, string rootPassword)
 	{
-		if (job == null || string.IsNullOrWhiteSpace(job.Url))
+		if (job == null || (job.Kind != ComponentCatalog.KindServer && job.Kind != ComponentCatalog.KindWorkbench))
+		{
+			throw new InvalidOperationException("组件信息不完整。");
+		}
+		return job.IsUninstall ? Uninstall(job, report) : Install(job, report, rootPassword);
+	}
+
+	private static ComponentResult Install(ComponentJob job, Action<int, string> report, string rootPassword)
+	{
+		if (string.IsNullOrWhiteSpace(job.Url))
 		{
 			throw new InvalidOperationException("组件信息不完整。");
 		}
@@ -135,7 +163,27 @@ internal static class ComponentInstaller
 		{
 			throw new InvalidOperationException("请为" + job.DisplayName + "选择安装位置。");
 		}
+		if (job.SetRootPassword && (!job.IsServer || !job.RegisterService || !IsValidRootPassword(rootPassword)))
+		{
+			throw new InvalidOperationException("没有收到有效的 root 密码，未开始安装。");
+		}
+		if (job.IsServer && job.RegisterService)
+		{
+			ValidateNewServerInstance(job.InstallDirectory, GetServiceName(job));
+		}
 		string msiPath = EnsureDownloaded(job, report);
+		try
+		{
+			return ApplyMsiAndConfigure(job, report, rootPassword, msiPath);
+		}
+		finally
+		{
+			SafeDelete(msiPath);
+		}
+	}
+
+	private static ComponentResult ApplyMsiAndConfigure(ComponentJob job, Action<int, string> report, string rootPassword, string msiPath)
+	{
 		report(62, "正在安装 " + job.DisplayName + " " + job.Version + "…");
 		Directory.CreateDirectory(job.InstallDirectory);
 		string property = ResolveInstallDirectoryProperty(msiPath);
@@ -153,18 +201,15 @@ internal static class ComponentInstaller
 		if (job.IsServer && job.RegisterService)
 		{
 			report(84, "正在初始化 MySQL 数据目录…");
-			string serviceWarning = InitializeServer(job, report, out serviceName);
+			string serviceWarning = InitializeServer(job, report, rootPassword, out serviceName);
 			if (!string.IsNullOrWhiteSpace(serviceWarning))
 			{
-				warning = string.IsNullOrWhiteSpace(warning) ? serviceWarning : (warning + "\n" + serviceWarning);
+				return new ComponentResult
+				{
+					Message = "MySQL Server 程序文件已安装，但实例配置未完成。\n" + serviceWarning,
+					InstalledDirectory = job.InstallDirectory
+				};
 			}
-		}
-		try
-		{
-			CleanupCache(msiPath);
-		}
-		catch
-		{
 		}
 		report(100, job.DisplayName + " 处理完成");
 		return new ComponentResult
@@ -177,151 +222,371 @@ internal static class ComponentInstaller
 		};
 	}
 
-	/// <summary>以管理员身份启动自身执行安装任务，并把子进程进度回传给界面。</summary>
-	private static ComponentResult RunElevated(ComponentJob job, Action<int, string> report)
+	private static ComponentResult Uninstall(ComponentJob job, Action<int, string> report)
 	{
-		Directory.CreateDirectory(WorkRoot);
+		InstalledComponent target = ComponentCatalog.FindUninstallableComponents(job.Kind).FirstOrDefault(item =>
+			item.ProductCode == job.UninstallProductCode && item.MachineWide == job.MachineWide);
+		if (target == null)
+		{
+			throw new InvalidOperationException("未找到所选组件的 Windows Installer 记录，请刷新后重试。");
+		}
+		string serverDirectory = job.IsServer ? ResolveMsiServerDirectory(target) : null;
+		if (job.IsServer && string.IsNullOrWhiteSpace(serverDirectory))
+		{
+			throw new InvalidOperationException("无法确认所选 Server 的安装目录和关联服务。为免影响其他实例，请备份数据，停止对应服务后使用 Windows 的“已安装的应用”卸载。");
+		}
+		Dictionary<string, string> services = job.IsServer ? FindServicesForServer(serverDirectory) : new Dictionary<string, string>();
+		List<string> stopped = new List<string>();
+		bool removed = false;
+		try
+		{
+			foreach (string name in services.Keys)
+			{
+				using ServiceController service = new ServiceController(name);
+				if (service.Status == ServiceControllerStatus.Stopped)
+				{
+					continue;
+				}
+				report(15, "正在停止 Windows 服务 " + name + "…");
+				bool runningDependent = false;
+				foreach (ServiceController dependent in service.DependentServices)
+				{
+					using (dependent)
+					{
+						runningDependent |= dependent.Status != ServiceControllerStatus.Stopped;
+					}
+				}
+				if (runningDependent)
+				{
+					throw new InvalidOperationException("有其他服务依赖 " + name + " 且仍在运行，请先手动停止后重试。");
+				}
+				if (service.Status != ServiceControllerStatus.StopPending)
+				{
+					service.Stop();
+					stopped.Add(name);
+				}
+				service.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(60));
+			}
+			string logDirectory = Path.Combine(WorkRoot, "logs");
+			Directory.CreateDirectory(logDirectory);
+			string logPath = Path.Combine(logDirectory, target.Kind + "-uninstall-" + Guid.NewGuid().ToString("N") + ".log");
+			report(35, "正在通过 Windows Installer 卸载 " + target.DisplayName + "…");
+			int exitCode = RunMsi("/x " + target.ProductCode.ToString("B") + " /qn /norestart /l*v \"" + logPath + "\"", "卸载");
+			if (exitCode == 1602)
+			{
+				return new ComponentResult { Cancelled = true, Message = "已取消卸载。" };
+			}
+			if (exitCode != 0 && exitCode != 3010)
+			{
+				throw new InvalidOperationException("Windows Installer 未完成卸载（代码 " + exitCode + "）。\n" + DescribeMsiExitCode(exitCode) + "\n详细日志：" + logPath);
+			}
+			removed = true;
+			List<string> warnings = new List<string>();
+			if (exitCode == 3010)
+			{
+				warnings.Add("需要重新启动 Windows 以完成卸载。");
+			}
+			else if (job.IsServer)
+			{
+				foreach (KeyValuePair<string, string> service in services)
+				{
+					if (!string.Equals(ServiceManager.TryGetRawImagePath(service.Key), service.Value, StringComparison.Ordinal))
+					{
+						continue;
+					}
+					if (File.Exists(Path.Combine(serverDirectory, "bin", "mysqld.exe")) || File.Exists(ServiceManager.NormalizeImagePath(service.Value)) || !target.MachineWide)
+					{
+						warnings.Add("保留了 Windows 服务 " + service.Key + "，请核对其安装路径及状态。");
+						continue;
+					}
+					ProcessResult deletion = RunTool(Path.Combine(Environment.SystemDirectory, "sc.exe"), "delete \"" + service.Key + "\"", 30000);
+					if (deletion.ExitCode != 0 && ServiceManager.ServiceExists(service.Key))
+					{
+						warnings.Add("未能移除残留服务 " + service.Key + "，请在 Windows 中检查。");
+					}
+				}
+			}
+			report(100, target.DisplayName + " 卸载流程完成");
+			return new ComponentResult
+			{
+				Success = true,
+				Message = target.DisplayName + (exitCode == 3010 ? " 已卸载，重启后生效。" : " 已卸载。"),
+				Detail = warnings.Count == 0 ? null : string.Join("\n", warnings)
+			};
+		}
+		finally
+		{
+			if (!removed)
+			{
+				foreach (string name in stopped)
+				{
+					ServiceActionResult restored = ServiceManager.StartService(name);
+					if (!restored.Success)
+					{
+						AppLog.Warning("卸载未完成，无法恢复 MySQL 服务 " + name + "：" + restored.Message);
+					}
+				}
+			}
+		}
+	}
+
+	[DllImport("msi.dll", CharSet = CharSet.Unicode)]
+	private static extern int MsiGetProductInfo(string product, string property, StringBuilder buffer, ref int chars);
+
+	[DllImport("msi.dll", CharSet = CharSet.Unicode)]
+	private static extern int MsiGetComponentPath(string product, string component, StringBuilder buffer, ref int chars);
+
+	private static string ResolveMsiServerDirectory(InstalledComponent target)
+	{
+		string product = target.ProductCode.ToString("B");
+		string location = ReadProductProperty(product, "InstallLocation");
+		foreach (string candidate in new[] { location, target.Directory })
+		{
+			if (!string.IsNullOrEmpty(candidate) && Path.IsPathRooted(candidate) && File.Exists(Path.Combine(candidate, "bin", "mysqld.exe")))
+			{
+				return candidate;
+			}
+		}
+		// 一些 MySQL MSI 不提供 InstallLocation；从该产品的缓存 MSI 找 mysqld 的组件键路径。
+		string package = ReadProductProperty(product, "LocalPackage");
+		if (string.IsNullOrWhiteSpace(package) || MsiOpenDatabase(package, IntPtr.Zero, out IntPtr database) != 0)
+		{
+			return null;
+		}
+		try
+		{
+			const string sql = "SELECT `File`.`FileName`, `Component`.`ComponentId` FROM `File`, `Component` WHERE `File`.`Component_` = `Component`.`Component` AND `File`.`File` = `Component`.`KeyPath`";
+			if (MsiDatabaseOpenView(database, sql, out IntPtr view) != 0)
+			{
+				return null;
+			}
+			try
+			{
+				if (MsiViewExecute(view, IntPtr.Zero) != 0)
+				{
+					return null;
+				}
+				while (MsiViewFetch(view, out IntPtr record) == 0)
+				{
+					try
+					{
+						if (!ReadMsiField(record, 1).Split('|').Contains("mysqld.exe", StringComparer.OrdinalIgnoreCase) ||
+							!Guid.TryParseExact(ReadMsiField(record, 2), "B", out Guid component))
+						{
+							continue;
+						}
+						StringBuilder path = new StringBuilder(1024);
+						int chars = path.Capacity;
+						const int InstallStateLocal = 3;
+						if (MsiGetComponentPath(product, component.ToString("B"), path, ref chars) == InstallStateLocal && File.Exists(path.ToString()))
+						{
+							string bin = Path.GetDirectoryName(path.ToString());
+							if (string.Equals(Path.GetFileName(bin), "bin", StringComparison.OrdinalIgnoreCase))
+							{
+								return Path.GetDirectoryName(bin);
+							}
+						}
+					}
+					finally
+					{
+						MsiCloseHandle(record);
+					}
+				}
+			}
+			finally
+			{
+				MsiCloseHandle(view);
+			}
+		}
+		finally
+		{
+			MsiCloseHandle(database);
+		}
+		return null;
+	}
+
+	private static string ReadProductProperty(string product, string property)
+	{
+		StringBuilder buffer = new StringBuilder(1024);
+		int chars = buffer.Capacity;
+		return MsiGetProductInfo(product, property, buffer, ref chars) == 0 ? buffer.ToString() : null;
+	}
+
+	[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+	private static extern uint GetFinalPathNameByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle file, StringBuilder path, uint chars, uint flags);
+
+	private static string CanonicalFilePath(string path)
+	{
+		if (string.IsNullOrWhiteSpace(path) || !Path.IsPathRooted(path))
+		{
+			return string.Empty;
+		}
+		try
+		{
+			using FileStream file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+			StringBuilder buffer = new StringBuilder(1024);
+			uint size = GetFinalPathNameByHandle(file.SafeFileHandle, buffer, (uint)buffer.Capacity, 0);
+			if (size > 0 && size < buffer.Capacity)
+			{
+				return buffer.ToString();
+			}
+		}
+		catch (IOException)
+		{
+		}
+		catch (UnauthorizedAccessException)
+		{
+		}
+		return Path.GetFullPath(path);
+	}
+
+	private static Dictionary<string, string> FindServicesForServer(string directory)
+	{
+		Dictionary<string, string> matches = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		string expected = CanonicalFilePath(Path.Combine(directory, "bin", "mysqld.exe"));
+		foreach (ServiceController service in ServiceController.GetServices())
+		{
+			using (service)
+			{
+				string raw = ServiceManager.TryGetRawImagePath(service.ServiceName);
+				string actual = ServiceManager.NormalizeImagePath(raw);
+				if (string.Equals(Path.GetFileName(actual), "mysqld.exe", StringComparison.OrdinalIgnoreCase) &&
+					string.Equals(expected, CanonicalFilePath(actual), StringComparison.OrdinalIgnoreCase))
+				{
+					matches.Add(service.ServiceName, raw);
+				}
+			}
+		}
+		return matches;
+	}
+
+	/// <summary>以管理员身份启动自身执行任务，并把子进程进度回传给界面。</summary>
+	private static ComponentResult RunElevated(ComponentJob job, Action<int, string> report, string rootPassword)
+	{
 		string token = Guid.NewGuid().ToString("N");
-		string jobPath = Path.Combine(WorkRoot, "job-" + token + ".json");
-		string resultPath = Path.Combine(WorkRoot, "result-" + token + ".json");
-		string progressPath = Path.Combine(WorkRoot, "progress-" + token + ".log");
-		WriteJson(jobPath, job);
+		using WindowsIdentity identity = WindowsIdentity.GetCurrent();
+		using Process parent = Process.GetCurrentProcess();
+		PipeSecurity security = new PipeSecurity();
+		security.SetAccessRuleProtection(true, false);
+		security.AddAccessRule(new PipeAccessRule(identity.User, PipeAccessRights.FullControl, AccessControlType.Allow));
+		security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null), PipeAccessRights.ReadWrite, AccessControlType.Allow));
+		using NamedPipeServerStream pipe = new NamedPipeServerStream("MySQLManager.Component." + token, PipeDirection.InOut, 1,
+			PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 4096, 4096, security);
 		report(0, "正在请求管理员授权…");
 		ProcessStartInfo startInfo = new ProcessStartInfo(Application.ExecutablePath)
 		{
-			Arguments = "--apply-component \"" + jobPath + "\" --component-result \"" + resultPath + "\" --component-progress \"" + progressPath + "\"",
+			Arguments = "--apply-component " + token + " --component-parent " + parent.Id,
 			UseShellExecute = true,
 			Verb = "runas",
 			WindowStyle = ProcessWindowStyle.Hidden,
 			WorkingDirectory = Path.GetDirectoryName(Application.ExecutablePath) ?? Environment.CurrentDirectory
 		};
-		Process process;
 		try
 		{
-			process = Process.Start(startInfo);
-		}
-		catch (Exception ex)
-		{
-			SafeDelete(jobPath);
-			AppLog.Warning("组件安装未获得管理员授权：" + ex.Message);
-			return new ComponentResult
+			using Process process = Process.Start(startInfo);
+			if (process == null)
 			{
-				Success = false,
-				Cancelled = true,
-				Message = "已取消管理员授权，未做任何更改。"
-			};
-		}
-		if (process == null)
-		{
-			SafeDelete(jobPath);
-			return new ComponentResult
-			{
-				Success = false,
-				Cancelled = true,
-				Message = "未能启动安装进程。"
-			};
-		}
-		int lastPercent = -1;
-		DateTime deadline = DateTime.UtcNow.AddHours(1);
-		try
-		{
-			while (!process.HasExited)
-			{
-				if (DateTime.UtcNow > deadline)
-				{
-					try
-					{
-						process.Kill();
-					}
-					catch
-					{
-					}
-					return new ComponentResult
-					{
-						Success = false,
-						Message = "安装超时（超过 1 小时），已终止。"
-					};
-				}
-				string line = ReadLastProgress(progressPath);
-				if (!string.IsNullOrWhiteSpace(line))
-				{
-					int tab = line.IndexOf('\t');
-					if (tab > 0 && int.TryParse(line.Substring(0, tab), out int percent) && percent != lastPercent)
-					{
-						lastPercent = percent;
-						report(percent, line.Substring(tab + 1));
-					}
-				}
-				Thread.Sleep(250);
+				return new ComponentResult { Message = "未能启动管理员进程。" };
 			}
-			process.WaitForExit();
-		}
-		finally
-		{
-			process.Dispose();
-		}
-		ComponentResult result = ReadResult(resultPath);
-		if (result == null)
-		{
-			result = new ComponentResult
+			Task connection = pipe.WaitForConnectionAsync();
+			for (int attempt = 0; !connection.Wait(250); attempt++)
 			{
-				Success = process.ExitCode == 0,
-				Message = ((process.ExitCode == 0) ? "安装完成。" : ("安装进程异常退出（代码 " + process.ExitCode + "）。"))
-			};
+				if (attempt >= 80 || process.HasExited)
+				{
+					return new ComponentResult { Message = "未能与管理员进程建立连接，未发送组件任务。" };
+				}
+			}
+			if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out uint pid) || pid != process.Id)
+			{
+				return new ComponentResult { Message = "管理员进程身份校验失败，未发送组件任务。" };
+			}
+			using BinaryWriter writer = new BinaryWriter(pipe, Encoding.UTF8, true);
+			using BinaryReader reader = new BinaryReader(pipe, Encoding.UTF8, true);
+			WriteMessage(writer, job);
+			if (job.SetRootPassword)
+			{
+				writer.Write(rootPassword ?? string.Empty);
+				writer.Flush();
+			}
+			while (true)
+			{
+				int percent = reader.ReadInt32();
+				if (percent == -1)
+				{
+					return ReadMessage<ComponentResult>(reader);
+				}
+				report(percent, reader.ReadString());
+			}
 		}
-		SafeDelete(jobPath);
-		SafeDelete(resultPath);
-		SafeDelete(progressPath);
-		return result;
+		catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
+		{
+			return new ComponentResult { Cancelled = true, Message = "已取消管理员授权，未做任何更改。" };
+		}
+		catch (IOException)
+		{
+			return new ComponentResult { Message = "与管理员进程的连接意外断开，请确认组件状态后再试。" };
+		}
 	}
 
-	/// <summary>提权子进程入口：执行任务文件并回写结果，不显示界面。</summary>
+	[DllImport("kernel32.dll", SetLastError = true)]
+	private static extern bool GetNamedPipeClientProcessId(Microsoft.Win32.SafeHandles.SafePipeHandle pipe, out uint processId);
+
+	[DllImport("kernel32.dll", SetLastError = true)]
+	private static extern bool GetNamedPipeServerProcessId(Microsoft.Win32.SafeHandles.SafePipeHandle pipe, out uint processId);
+
+	/// <summary>提权子进程入口。任务、密码、进度和结果都只通过本机管道传递。</summary>
 	public static bool TryHandleApplyCommand(string[] args)
 	{
-		string jobPath = GetArgument(args, "--apply-component");
-		if (string.IsNullOrWhiteSpace(jobPath))
+		string token = GetArgument(args, "--apply-component");
+		if (token == null)
 		{
 			return false;
 		}
-		string resultPath = GetArgument(args, "--component-result");
-		string progressPath = GetArgument(args, "--component-progress");
-		ComponentResult result;
+		if (!IsElevated || !Guid.TryParseExact(token, "N", out _) || !uint.TryParse(GetArgument(args, "--component-parent"), out uint parentPid))
+		{
+			return true;
+		}
 		try
 		{
-			ComponentJob job = ReadJson<ComponentJob>(jobPath);
-			result = Install(job, delegate(int percent, string message)
+			using NamedPipeClientStream pipe = new NamedPipeClientStream(".", "MySQLManager.Component." + token,
+				PipeAccessRights.ReadWrite, PipeOptions.None, TokenImpersonationLevel.Identification, HandleInheritability.None);
+			pipe.Connect(15000);
+			if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle, out uint pid) || pid != parentPid)
 			{
-				if (!string.IsNullOrWhiteSpace(progressPath))
+				return true;
+			}
+			using BinaryReader reader = new BinaryReader(pipe, Encoding.UTF8, true);
+			using BinaryWriter writer = new BinaryWriter(pipe, Encoding.UTF8, true);
+			ComponentResult result;
+			try
+			{
+				ComponentJob job = ReadMessage<ComponentJob>(reader);
+				string rootPassword = job.SetRootPassword ? reader.ReadString() : null;
+				result = Execute(job, (percent, message) =>
 				{
 					try
 					{
-						File.AppendAllText(progressPath, percent + "\t" + (message ?? string.Empty).Replace("\r", " ").Replace("\n", " ") + "\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+						writer.Write(percent);
+						writer.Write(message ?? string.Empty);
+						writer.Flush();
 					}
-					catch
+					catch (IOException)
 					{
+						// 界面断开时仍让已开始的 Windows Installer 操作正常结束。
 					}
-				}
-			});
+				}, rootPassword);
+			}
+			catch (Exception ex)
+			{
+				AppLog.Error("组件操作失败。", ex);
+				result = new ComponentResult { Message = ex.Message };
+			}
+			writer.Write(-1);
+			WriteMessage(writer, result);
 		}
 		catch (Exception ex)
 		{
-			AppLog.Error("组件安装失败。", ex);
-			result = new ComponentResult
-			{
-				Success = false,
-				Message = ex.Message
-			};
-		}
-		if (!string.IsNullOrWhiteSpace(resultPath))
-		{
-			try
-			{
-				WriteJson(resultPath, result);
-			}
-			catch (Exception ex2)
-			{
-				AppLog.Error("写入组件安装结果失败。", ex2);
-			}
+			AppLog.Warning("管理员组件进程通信失败：" + ex.Message);
 		}
 		return true;
 	}
@@ -338,50 +603,29 @@ internal static class ComponentInstaller
 		return null;
 	}
 
-	private static string ReadLastProgress(string path)
+	private static void WriteMessage<T>(BinaryWriter writer, T value)
 	{
-		try
-		{
-			if (!File.Exists(path))
-			{
-				return null;
-			}
-			using FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-			using StreamReader reader = new StreamReader(stream, Encoding.UTF8);
-			string text = reader.ReadToEnd();
-			string[] lines = text.Split(new char[1] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
-			return (lines.Length > 0) ? lines[lines.Length - 1].TrimEnd('\r') : null;
-		}
-		catch
-		{
-			return null;
-		}
+		using MemoryStream stream = new MemoryStream();
+		new DataContractJsonSerializer(typeof(T)).WriteObject(stream, value);
+		writer.Write((int)stream.Length);
+		writer.Write(stream.GetBuffer(), 0, (int)stream.Length);
+		writer.Flush();
 	}
 
-	private static void WriteJson<T>(string path, T value)
+	private static T ReadMessage<T>(BinaryReader reader) where T : class
 	{
-		using FileStream stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read);
-		DataContractJsonSerializer serializer = new DataContractJsonSerializer(typeof(T));
-		serializer.WriteObject(stream, value);
-	}
-
-	private static T ReadJson<T>(string path) where T : class
-	{
-		using FileStream stream = File.OpenRead(path);
-		DataContractJsonSerializer serializer = new DataContractJsonSerializer(typeof(T));
-		return serializer.ReadObject(stream) as T;
-	}
-
-	private static ComponentResult ReadResult(string path)
-	{
-		try
+		int length = reader.ReadInt32();
+		if (length <= 0 || length > 1024 * 1024)
 		{
-			return File.Exists(path) ? ReadJson<ComponentResult>(path) : null;
+			throw new InvalidDataException("组件任务消息长度无效。");
 		}
-		catch
+		byte[] bytes = reader.ReadBytes(length);
+		if (bytes.Length != length)
 		{
-			return null;
+			throw new EndOfStreamException();
 		}
+		using MemoryStream stream = new MemoryStream(bytes);
+		return (T)new DataContractJsonSerializer(typeof(T)).ReadObject(stream);
 	}
 
 	private static void SafeDelete(string path)
@@ -453,6 +697,7 @@ internal static class ComponentInstaller
 		}
 		if (lastError != null)
 		{
+			SafeDelete(temporary);
 			throw new InvalidOperationException("安装包下载失败：" + lastError.Message + "\n\n请确认网络可以访问 cdn.mysql.com 或 downloads.mysql.com 后重试。");
 		}
 		SafeDelete(target);
@@ -460,6 +705,7 @@ internal static class ComponentInstaller
 		long size = new FileInfo(target).Length;
 		if (size < 5 * 1024 * 1024)
 		{
+			SafeDelete(target);
 			throw new InvalidOperationException("安装包下载不完整（" + FormatSize(size) + "），请检查网络后重试。");
 		}
 		report(60, "下载完成（" + FormatSize(size) + "）");
@@ -496,24 +742,6 @@ internal static class ComponentInstaller
 				int percent = (int)Math.Min(58L, received * 58L / Math.Max(1L, total));
 				report(percent, "正在下载 " + fileName + "  " + fraction + "%  (" + FormatSize(received) + " / " + FormatSize(total) + ")");
 			}
-		}
-	}
-
-	private static void CleanupCache(string msiPath)
-	{
-		try
-		{
-			string cache = Path.GetDirectoryName(msiPath);
-			if (!string.IsNullOrWhiteSpace(cache) && Directory.Exists(cache) && string.Equals(Path.GetFileName(cache), "cache", StringComparison.OrdinalIgnoreCase))
-			{
-				foreach (string file in Directory.GetFiles(cache))
-				{
-					SafeDelete(file);
-				}
-			}
-		}
-		catch
-		{
 		}
 	}
 
@@ -651,7 +879,11 @@ internal static class ComponentInstaller
 
 	private static int RunMsiInstaller(string msiPath, string installDirectory, string property, string logPath)
 	{
-		string arguments = "/i \"" + msiPath + "\" /qn /norestart /l*v \"" + logPath + "\" " + property + "=\"" + installDirectory + "\" REBOOT=ReallySuppress ALLUSERS=1";
+		return RunMsi("/i \"" + msiPath + "\" /qn /norestart /l*v \"" + logPath + "\" " + property + "=\"" + installDirectory + "\" REBOOT=ReallySuppress ALLUSERS=1", "安装");
+	}
+
+	private static int RunMsi(string arguments, string operation)
+	{
 		ProcessStartInfo startInfo = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "msiexec.exe"), arguments)
 		{
 			UseShellExecute = false,
@@ -673,7 +905,7 @@ internal static class ComponentInstaller
 			catch
 			{
 			}
-			throw new InvalidOperationException("安装超时（超过 45 分钟），已终止。");
+			throw new InvalidOperationException(operation + "超时（超过 45 分钟）。请在 Windows 中确认组件状态后再重试。");
 		}
 		return process.ExitCode;
 	}
@@ -724,54 +956,171 @@ internal static class ComponentInstaller
 		}
 	}
 
-	/// <summary>初始化数据目录、生成 my.ini 并注册 Windows 服务。</summary>
-	private static string InitializeServer(ComponentJob job, Action<int, string> report, out string serviceName)
+	internal static bool IsValidRootPassword(string password)
 	{
-		string basedir = job.InstallDirectory;
+		if (string.IsNullOrWhiteSpace(password) || password.Length > 256 || password.Any(char.IsControl))
+		{
+			return false;
+		}
+		try
+		{
+			return new UTF8Encoding(false, true).GetByteCount(password) <= 256;
+		}
+		catch (EncoderFallbackException)
+		{
+			return false;
+		}
+	}
+
+	private static string GetServiceName(ComponentJob job) => string.IsNullOrWhiteSpace(job.ServiceName) ? ComponentCatalog.DefaultServiceName(job.Version) : job.ServiceName.Trim();
+
+	private static void ValidateNewServerInstance(string basedir, string serviceName)
+	{
+		if (!Regex.IsMatch(serviceName, @"^MySQL[0-9]*$", RegexOptions.CultureInvariant))
+		{
+			throw new InvalidOperationException("MySQL 服务名无效。");
+		}
+		if (ServiceManager.ServiceExists(serviceName))
+		{
+			throw new InvalidOperationException("Windows 服务 " + serviceName + " 已存在。可取消“初始化数据目录并注册为 Windows 服务”，仅安装程序文件。");
+		}
+		string dataDirectory = Path.Combine(basedir, "data");
+		if (File.Exists(Path.Combine(basedir, "my.ini")) || (Directory.Exists(dataDirectory) && Directory.EnumerateFileSystemEntries(dataDirectory).Any()))
+		{
+			throw new InvalidOperationException("所选目录已有 MySQL 数据或配置，不会覆盖或修改已有实例。请换用新目录，或取消初始化选项。");
+		}
+	}
+
+	/// <summary>仅初始化全新实例；密码配置成功前不注册 Windows 服务。</summary>
+	private static string InitializeServer(ComponentJob job, Action<int, string> report, string rootPassword, out string serviceName)
+	{
+		serviceName = null;
+		string basedir = Path.GetFullPath(job.InstallDirectory);
 		string mysqld = Path.Combine(basedir, "bin", "mysqld.exe");
-		serviceName = string.IsNullOrWhiteSpace(job.ServiceName) ? ComponentCatalog.DefaultServiceName(job.Version) : job.ServiceName.Trim();
-		if (!File.Exists(mysqld))
+		string mysql = Path.Combine(basedir, "bin", "mysql.exe");
+		if (!File.Exists(mysqld) || (job.SetRootPassword && !File.Exists(mysql)))
 		{
-			return "未找到 mysqld.exe，已跳过服务初始化。";
+			return "未在所选目录找到所需的 MySQL 程序，已跳过实例初始化。";
 		}
-		if (ServiceExists(serviceName))
-		{
-			return "Windows 服务 " + serviceName + " 已存在，已跳过服务初始化，可直接在 MySQL管家中使用该服务。";
-		}
+		string name = GetServiceName(job);
+		ValidateNewServerInstance(basedir, name);
 		string dataDirectory = Path.Combine(basedir, "data");
 		string iniPath = Path.Combine(basedir, "my.ini");
 		int port = FindFreePort(3306);
 		Directory.CreateDirectory(dataDirectory);
-		if (!File.Exists(iniPath))
+		using (FileStream newIni = new FileStream(iniPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+		using (StreamWriter writer = new StreamWriter(newIni, new UTF8Encoding(false)))
 		{
-			File.WriteAllText(iniPath, BuildIni(basedir, dataDirectory, port), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-			AppLog.Info("已生成 my.ini：" + iniPath);
+			writer.Write(BuildIni(basedir, dataDirectory, port));
 		}
-		if (Directory.GetFileSystemEntries(dataDirectory).Length == 0)
+		string defaults = "--defaults-file=\"" + iniPath + "\"";
+		report(86, "正在初始化数据目录（可能需要 1-2 分钟）…");
+		ProcessResult initResult = RunTool(mysqld, defaults + (job.SetRootPassword ? " --initialize --console" : " --initialize-insecure --console"), 600000);
+		if (initResult.ExitCode != 0)
 		{
-			report(86, "正在初始化数据目录（可能需要 1-2 分钟）…");
-			ProcessResult initResult = RunTool(mysqld, "--defaults-file=\"" + iniPath + "\" --initialize-insecure --console", 600000);
-			if (initResult.ExitCode != 0)
+			return "数据目录初始化失败（mysqld 返回 " + initResult.ExitCode + "）。" + (job.SetRootPassword ? string.Empty : "\n" + Trim(initResult.Output));
+		}
+		if (job.SetRootPassword)
+		{
+			report(90, "正在为新实例设置 root 密码…");
+			Match temporary = Regex.Match(initResult.Output, @"temporary password is generated for root@localhost:\s*(\S+)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+			if (!temporary.Success || !ConfigureRootPassword(mysqld, mysql, defaults, temporary.Groups[1].Value, rootPassword))
 			{
-				return "数据目录初始化失败（mysqld 返回 " + initResult.ExitCode + "）。\n" + Trim(initResult.Output) + "\n可稍后手动执行 mysqld --initialize-insecure。";
+				return "未能确认 root 密码已设置，未注册 Windows 服务。已保留新建的数据和配置，请检查后再试，或换用一个空目录。";
 			}
 		}
-		report(94, "正在注册 Windows 服务 " + serviceName + "…");
-		ProcessResult installResult = RunTool(mysqld, "--install " + serviceName + " --defaults-file=\"" + iniPath + "\"", 120000);
-		if (installResult.ExitCode != 0)
+		report(94, "正在注册 Windows 服务 " + name + "…");
+		ProcessResult installResult = RunTool(mysqld, "--install-manual " + name + " " + defaults, 120000);
+		if (installResult.ExitCode != 0 || !ServiceManager.ServiceExists(name))
 		{
-			return "注册 Windows 服务失败（mysqld --install 返回 " + installResult.ExitCode + "）。\n" + Trim(installResult.Output);
+			return "注册 Windows 服务失败（mysqld 返回 " + installResult.ExitCode + "）。\n" + Trim(installResult.Output);
 		}
-		RunTool(Path.Combine(Environment.SystemDirectory, "sc.exe"), "config " + serviceName + " start= demand", 30000);
+		serviceName = name;
 		try
 		{
-			File.WriteAllText(Path.Combine(basedir, "服务信息.txt"), "服务名称：" + serviceName + "\r\n端口：" + port + "\r\n配置文件：" + iniPath + "\r\n数据目录：" + dataDirectory + "\r\n初始 root 密码：空（首次使用后请立即修改）\r\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+			File.WriteAllText(Path.Combine(basedir, "服务信息.txt"), "服务名称：" + name + "\r\n端口：" + port + "\r\n配置文件：" + iniPath + "\r\n数据目录：" + dataDirectory + "\r\n" + (job.SetRootPassword ? "初始 root 密码：已设置（未保存明文）" : "初始 root 密码：空（建议首次使用后立即设置）") + "\r\n", new UTF8Encoding(false));
 		}
 		catch
 		{
 		}
 		return null;
 	}
+
+	private static bool ConfigureRootPassword(string mysqld, string mysql, string defaults, string temporaryPassword, string password)
+	{
+		string id = Guid.NewGuid().ToString("N");
+		string sharedMemory = "MySQLManager" + id;
+		string clientOptions = Path.Combine(Path.GetTempPath(), "MySQLManager-" + id + ".cnf");
+		bool optionsCreated = false;
+		try
+		{
+			using WindowsIdentity identity = WindowsIdentity.GetCurrent();
+			FileSecurity security = new FileSecurity();
+			security.SetAccessRuleProtection(true, false);
+			security.AddAccessRule(new FileSystemAccessRule(identity.User, FileSystemRights.FullControl, AccessControlType.Allow));
+			// 仅 Windows ACL 保护的临时文件保存随机过渡密码；用户输入的密码只经客户端标准输入发送。
+			using (FileStream file = new FileStream(clientOptions, FileMode.CreateNew, FileSystemRights.Write, FileShare.None, 4096, FileOptions.None, security))
+			{
+				optionsCreated = true;
+				using StreamWriter writer = new StreamWriter(file, new UTF8Encoding(false));
+				writer.WriteLine("[client]");
+				writer.WriteLine("password=\"" + temporaryPassword.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"");
+			}
+			using Process server = new Process
+			{
+				StartInfo = HiddenProcess(mysqld, defaults + " --console --skip-networking --mysqlx=OFF --shared-memory --shared-memory-base-name=" + sharedMemory + " --skip-log-bin --general-log=OFF --slow-query-log=OFF --sql-mode=NO_ENGINE_SUBSTITUTION")
+			};
+			if (!server.Start())
+			{
+				return false;
+			}
+			try
+			{
+				server.BeginOutputReadLine();
+				server.BeginErrorReadLine();
+				string args = "--defaults-file=\"" + clientOptions + "\" --no-login-paths --protocol=MEMORY --shared-memory-base-name=" + sharedMemory + " --user=root --connect-timeout=3 --connect-expired-password --default-character-set=utf8mb4 --batch --binary-mode";
+				string sql = BuildRootPasswordSql(password);
+				Stopwatch timer = Stopwatch.StartNew();
+				while (timer.Elapsed < TimeSpan.FromMinutes(2) && !server.HasExited)
+				{
+					ProcessResult changed = RunTool(mysql, args, 15000, sql);
+					if (changed.ExitCode == 0)
+					{
+						return server.WaitForExit(60000) && server.ExitCode == 0;
+					}
+					// 只重试启动尚未就绪的本地连接；不会输出含 SQL 的客户端错误。
+					if (!Regex.IsMatch(changed.Output, @"\bERROR 20(?:3[7-9]|4[0-6])\b", RegexOptions.CultureInvariant))
+					{
+						return false;
+					}
+					Thread.Sleep(350);
+				}
+				return false;
+			}
+			finally
+			{
+				if (!server.HasExited)
+				{
+					server.Kill();
+					server.WaitForExit(10000);
+				}
+			}
+		}
+		catch (Exception)
+		{
+			return false;
+		}
+		finally
+		{
+			if (optionsCreated)
+			{
+				SafeDelete(clientOptions);
+			}
+		}
+	}
+
+	internal static string BuildRootPasswordSql(string password) =>
+		"ALTER USER 'root'@'localhost' IDENTIFIED BY '" + password.Replace("\\", "\\\\").Replace("'", "''") + "';\nSHUTDOWN;\n";
 
 	private static string BuildIni(string basedir, string dataDirectory, int port)
 	{
@@ -791,19 +1140,6 @@ internal static class ComponentInstaller
 	private static string ToUnixPath(string path)
 	{
 		return (path ?? string.Empty).Replace('\\', '/');
-	}
-
-	private static bool ServiceExists(string serviceName)
-	{
-		try
-		{
-			using Microsoft.Win32.RegistryKey key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey("SYSTEM\\CurrentControlSet\\Services\\" + serviceName);
-			return key != null;
-		}
-		catch
-		{
-			return false;
-		}
 	}
 
 	private static int FindFreePort(int preferred)
@@ -831,7 +1167,17 @@ internal static class ComponentInstaller
 		public string Output;
 	}
 
-	private static ProcessResult RunTool(string executable, string arguments, int timeout)
+	private static ProcessStartInfo HiddenProcess(string executable, string arguments) => new ProcessStartInfo(executable, arguments)
+	{
+		UseShellExecute = false,
+		CreateNoWindow = true,
+		RedirectStandardOutput = true,
+		RedirectStandardError = true,
+		WindowStyle = ProcessWindowStyle.Hidden,
+		WorkingDirectory = Path.GetDirectoryName(executable) ?? Path.GetTempPath()
+	};
+
+	private static ProcessResult RunTool(string executable, string arguments, int timeout, string input = null)
 	{
 		ProcessResult result = new ProcessResult
 		{
@@ -840,15 +1186,8 @@ internal static class ComponentInstaller
 		};
 		try
 		{
-			ProcessStartInfo startInfo = new ProcessStartInfo(executable, arguments)
-			{
-				UseShellExecute = false,
-				CreateNoWindow = true,
-				RedirectStandardOutput = true,
-				RedirectStandardError = true,
-				WindowStyle = ProcessWindowStyle.Hidden,
-				WorkingDirectory = Path.GetDirectoryName(executable) ?? Path.GetTempPath()
-			};
+			ProcessStartInfo startInfo = HiddenProcess(executable, arguments);
+			startInfo.RedirectStandardInput = input != null;
 			using Process process = new Process
 			{
 				StartInfo = startInfo
@@ -858,19 +1197,48 @@ internal static class ComponentInstaller
 			{
 				if (e.Data != null)
 				{
-					output.AppendLine(e.Data);
+					lock (output)
+					{
+						output.AppendLine(e.Data);
+					}
 				}
 			};
 			process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e)
 			{
 				if (e.Data != null)
 				{
-					output.AppendLine(e.Data);
+					lock (output)
+					{
+						output.AppendLine(e.Data);
+					}
 				}
 			};
 			process.Start();
 			process.BeginOutputReadLine();
 			process.BeginErrorReadLine();
+			if (input != null)
+			{
+				try
+				{
+					byte[] bytes = new UTF8Encoding(false, true).GetBytes(input);
+					try
+					{
+						process.StandardInput.BaseStream.Write(bytes, 0, bytes.Length);
+					}
+					finally
+					{
+						Array.Clear(bytes, 0, bytes.Length);
+					}
+				}
+				catch (IOException)
+				{
+					// 进程可能在读取输入前就退出，仍读取其退出代码和诊断。
+				}
+				finally
+				{
+					process.StandardInput.Close();
+				}
+			}
 			if (!process.WaitForExit(timeout))
 			{
 				try

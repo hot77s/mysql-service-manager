@@ -18,7 +18,7 @@ internal static class Program
 		{
 			return;
 		}
-		// 提权子进程：执行组件安装任务后直接退出，不进入界面。
+		// 提权子进程：执行组件安装或卸载任务后直接退出，不进入界面。
 		if (ComponentInstaller.TryHandleApplyCommand(args))
 		{
 			return;
