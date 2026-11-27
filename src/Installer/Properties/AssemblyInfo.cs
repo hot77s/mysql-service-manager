@@ -8,6 +8,6 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyCompany("77's")]
 [assembly: AssemblyTitle("MySQL管家安装程序")]
 [assembly: AssemblyCopyright("Copyright © 2026")]
-[assembly: AssemblyFileVersion("1.6.3.0")]
+[assembly: AssemblyFileVersion("1.6.4.0")]
 [assembly: ComVisible(false)]
-[assembly: AssemblyVersion("1.6.3.0")]
+[assembly: AssemblyVersion("1.6.4.0")]

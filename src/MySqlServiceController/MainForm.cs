@@ -164,6 +164,8 @@ internal sealed class MainForm : Form
 
 	private RoundedButton _updateButton;
 
+	private StatusDot _updateDot;
+
 	private AppUpdateInfo _appUpdateInfo;
 
 	private bool _appUpdateAvailable;
@@ -295,6 +297,8 @@ internal sealed class MainForm : Form
 			_workbenchUpdateLink.ForeColor = _workbenchUpdateLink.LinkColor;
 			_smallDot.SurfaceColor = Theme.Background;
 			_smallDot.DotColor = Theme.Success;
+			_updateDot.SurfaceColor = Theme.Background;
+			_updateDot.DotColor = Theme.Success;
 			ApplyBannerColors();
 			ApplyButtonTheme();
 			UpdateAdminBadge();
@@ -497,6 +501,17 @@ internal sealed class MainForm : Form
 		_updateButton.AccessibleName = "检查 MySQL管家 更新";
 		base.Controls.Add(_updateButton);
 		_toolTip.SetToolTip(_updateButton, "检查 MySQL管家 是否有新版本，可直接在软件内下载并安装");
+		_updateDot = new StatusDot();
+		_updateDot.Name = "AppUpdateDot";
+		_updateDot.Location = new Point(Dp(514), Dp(19));
+		_updateDot.Size = new Size(Dp(10), Dp(10));
+		_updateDot.DotColor = Theme.Success;
+		_updateDot.SurfaceColor = Theme.Background;
+		_updateDot.Visible = false;
+		_updateDot.Cursor = Cursors.Hand;
+		_updateDot.AccessibleName = "有新版本可用";
+		_updateDot.Click += UpdateButton_Click;
+		base.Controls.Add(_updateDot);
 
 		_statusCard = new SurfacePanel();
 		_statusCard.Location = new Point(Dp(24), Dp(58));
@@ -764,7 +779,7 @@ internal sealed class MainForm : Form
 		{
 			return;
 		}
-		if (_statusCard == null || _statusDescription == null || _bannerPanel == null || _detailsCard == null)
+		if (_statusCard == null || _statusDescription == null || _bannerPanel == null || _detailsCard == null || _updateDot == null)
 		{
 			return;
 		}
@@ -778,7 +793,8 @@ internal sealed class MainForm : Form
 			_trafficLights.Location = new Point(Dp(20), Dp(14));
 			_settingsButton.SetBounds(width - margin - Dp(60), Dp(10), Dp(60), Dp(28));
 			_updateButton.SetBounds(_settingsButton.Left - Dp(8) - Dp(86), Dp(10), Dp(86), Dp(28));
-			_titleLabel.SetBounds(Dp(24), Dp(10), Math.Max(Dp(140), _updateButton.Left - Dp(24) - Dp(12)), Dp(28));
+			_updateDot.SetBounds(_updateButton.Left - Dp(6) - Dp(10), Dp(10) + (Dp(28) - Dp(10)) / 2, Dp(10), Dp(10));
+			_titleLabel.SetBounds(Dp(24), Dp(10), Math.Max(Dp(140), _updateDot.Left - Dp(24) - Dp(10)), Dp(28));
 
 			_statusCard.SetBounds(margin, Dp(58), contentW, Dp(148));
 			_statusCard.Radius = Dp(16);
@@ -1198,29 +1214,31 @@ internal sealed class MainForm : Form
 		await CheckAppUpdateIfDueAsync(manual: false);
 	}
 
-	/// <summary>检查 MySQL管家 自身更新：默认 6 小时内只查一次，结果缓存在配置里。</summary>
+	/// <summary>检查 MySQL管家 自身更新：启动时先用上次结果点亮绿点，再真实联网查一次。</summary>
 	private async Task CheckAppUpdateIfDueAsync(bool manual)
 	{
 		if (_checkingAppUpdate || _updateButton == null)
 		{
 			return;
 		}
-		bool due = true;
-		if (!manual && DateTime.TryParse(_config.AppCheckedUtc, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTime checkedAt))
+		AppUpdateInfo cached = null;
+		if (!string.IsNullOrWhiteSpace(_config.AppLatestVersion))
 		{
-			due = DateTime.UtcNow - checkedAt > TimeSpan.FromHours(6.0);
-		}
-		if (!manual && !due)
-		{
-			if (!string.IsNullOrWhiteSpace(_config.AppLatestVersion))
+			cached = new AppUpdateInfo
 			{
-				ApplyAppUpdateInfo(new AppUpdateInfo
+				CheckSucceeded = true,
+				LatestVersion = _config.AppLatestVersion
+			};
+			// 先把上次的结论画到界面上：新版本的小绿点不必等网络。
+			if (!manual)
+			{
+				ApplyAppUpdateInfo(cached, notify: false);
+				if (_appUpdateAvailable)
 				{
-					CheckSucceeded = true,
-					LatestVersion = _config.AppLatestVersion
-				}, notify: false);
+					// 已经有绿点提示，就不再重复弹“发现新版本”横幅。
+					_appUpdateNotified = true;
+				}
 			}
-			return;
 		}
 		_checkingAppUpdate = true;
 		try
@@ -1228,6 +1246,13 @@ internal sealed class MainForm : Form
 			AppUpdateInfo info = await AppUpdateChecker.CheckAsync();
 			if (base.IsDisposed || base.Disposing)
 			{
+				return;
+			}
+			if (!info.CheckSucceeded && cached != null && UpdateVersion.IsNewer(cached.LatestVersion, UpdateVersion.CurrentText))
+			{
+				// 联网失败时保留上次的结论，小绿点不能因为断网就消失。
+				AppLog.Warning("联网检查更新失败，沿用上次结果 v" + cached.LatestVersion + "：" + info.ErrorMessage);
+				ApplyAppUpdateInfo(cached, notify: false);
 				return;
 			}
 			_config.AppCheckedUtc = DateTime.UtcNow.ToString("o");
@@ -1273,8 +1298,15 @@ internal sealed class MainForm : Form
 		{
 			return;
 		}
-		_updateButton.Text = (_appUpdateAvailable ? "有更新" : "检查更新");
+		// 按钮始终叫“检查更新”，有可用版本时在它左侧点亮一个小绿点。
+		_updateButton.Text = "检查更新";
 		ApplyUpdateButtonColors();
+		if (_updateDot != null)
+		{
+			_updateDot.Visible = _appUpdateAvailable;
+			_updateDot.AccessibleName = (_appUpdateAvailable ? ("发现新版本 v" + _appUpdateInfo.LatestVersion + "，点击查看") : "有新版本可用");
+			_toolTip.SetToolTip(_updateDot, (_appUpdateAvailable ? ("发现新版本 v" + _appUpdateInfo.LatestVersion + "，点击查看并安装") : string.Empty));
+		}
 		string tip = (_appUpdateAvailable ? ("发现新版本 v" + _appUpdateInfo.LatestVersion + "，点击查看并安装") : ("检查 MySQL管家 是否有新版本（当前 v" + UpdateVersion.CurrentText + "）"));
 		_toolTip.SetToolTip(_updateButton, tip);
 		_updateButton.AccessibleName = (_appUpdateAvailable ? ("发现新版本 v" + _appUpdateInfo.LatestVersion + "，点击查看") : "检查 MySQL管家 更新");
@@ -1287,11 +1319,11 @@ internal sealed class MainForm : Form
 		{
 			return;
 		}
-		bool highlight = _appUpdateAvailable;
-		_updateButton.NormalColor = (highlight ? Theme.Accent : Theme.Surface);
-		_updateButton.HoverColor = (highlight ? Theme.Mix(Theme.Accent, Color.White, 0.12) : Theme.SurfaceAlt);
-		_updateButton.PressedColor = (highlight ? Theme.Mix(Theme.Accent, Color.Black, 0.1) : Theme.Mix(Theme.SurfaceAlt, Theme.Text, 0.08));
-		_updateButton.ForeColor = (highlight ? Color.White : Theme.Text);
+		// 有更新时不再整块变色，避免和小绿点重复，只保持中性描边。
+		_updateButton.NormalColor = Theme.Surface;
+		_updateButton.HoverColor = Theme.SurfaceAlt;
+		_updateButton.PressedColor = Theme.Mix(Theme.SurfaceAlt, Theme.Text, 0.08);
+		_updateButton.ForeColor = Theme.Text;
 		_updateButton.ButtonBorderColor = Theme.Border;
 		_updateButton.SurfaceColor = Theme.Background;
 		_updateButton.DisabledColor = Theme.NeutralSoft;
